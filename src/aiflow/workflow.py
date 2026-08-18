@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiflow.db import Database
-from aiflow.errors import StateError
+from aiflow.errors import AiflowError, StateError
 from aiflow.models import ProjectRecord, TaskStatus
 from aiflow.validation import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -34,11 +34,30 @@ def validate_implemented_task(
         status=TaskStatus.VALIDATING,
     )
 
-    summary = run_project_validations(
-        root=project.path,
-        task_dir=task.task_dir,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        summary = run_project_validations(
+            root=project.path,
+            task_dir=task.task_dir,
+            timeout_seconds=timeout_seconds,
+        )
+    except KeyboardInterrupt:
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.VALIDATION_FAILED,
+        )
+        raise
+    except (AiflowError, OSError):
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.VALIDATION_FAILED,
+        )
+        raise
+    except Exception:
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.VALIDATION_FAILED,
+        )
+        raise
 
     final_status = TaskStatus.REVIEW_READY if summary.passed else TaskStatus.VALIDATION_FAILED
 

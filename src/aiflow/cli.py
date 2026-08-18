@@ -739,6 +739,79 @@ def run(
 
 
 @app.command()
+def validate(
+    task_id: Annotated[
+        str,
+        typer.Argument(
+            help="Task ID to validate or revalidate.",
+        ),
+    ],
+) -> None:
+    """Run deterministic validation for an implemented task."""
+    db = _db()
+
+    task = db.get_task(task_id)
+
+    if task is None:
+        _fail(f"unknown task ID: {task_id}")
+
+    project = db.get_project(task.project_id)
+
+    if project is None:
+        _fail(f"project no longer exists: {task.project_id}")
+
+    try:
+        summary = validate_implemented_task(
+            db=db,
+            project=project,
+            task_id=task.id,
+        )
+    except KeyboardInterrupt:
+        _fail(
+            "validation interrupted by user",
+            code=130,
+        )
+    except (AiflowError, OSError) as exc:
+        _fail(str(exc))
+
+    failed_count = sum(not result.passed for result in summary.results)
+
+    if not summary.passed:
+        console.print(
+            Panel.fit(
+                (
+                    "[bold yellow]"
+                    "Validation did not pass."
+                    "[/bold yellow]\n"
+                    f"Summary: {summary.summary_path}\n"
+                    "Commands discovered: "
+                    f"{len(summary.commands)}\n"
+                    "Commands failed: "
+                    f"{failed_count}\n"
+                    "Status: validation_failed"
+                ),
+                title="Validation failed",
+            )
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            (
+                "[bold green]"
+                "Validation passed."
+                "[/bold green]\n"
+                f"Summary: {summary.summary_path}\n"
+                "Validation commands: "
+                f"{len(summary.results)}\n"
+                "Status: review_ready"
+            ),
+            title="Ready for Sol review",
+        )
+    )
+
+
+@app.command()
 def show(
     task_id: Annotated[
         str,
