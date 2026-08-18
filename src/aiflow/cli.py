@@ -30,6 +30,7 @@ from aiflow.executor import (
     execute_codex,
 )
 from aiflow.git import (
+    GitProjectFacts,
     inspect_repository,
     repository_context,
     validate_repository_state,
@@ -38,7 +39,6 @@ from aiflow.models import (
     CodexRunSpec,
     PacketStage,
     ProjectRecord,
-    TaskRecord,
     TaskStatus,
 )
 from aiflow.packets import (
@@ -54,7 +54,6 @@ from aiflow.prompts import (
     build_planner_prompt,
 )
 from aiflow.review import (
-    ReviewArtifacts,
     prepare_review_artifacts,
 )
 from aiflow.workflow import (
@@ -85,7 +84,10 @@ def _fail(
 def _current_project(
     db: Database,
     path: Path,
-) -> tuple[object, object]:
+) -> tuple[
+    ProjectRecord,
+    GitProjectFacts,
+]:
     facts = inspect_repository(path)
 
     project = db.get_project_by_path(facts.root)
@@ -99,17 +101,6 @@ def _current_project(
         )
 
     return project, facts
-
-
-def _build_review_artifacts(
-    *,
-    project: ProjectRecord,
-    task: TaskRecord,
-) -> ReviewArtifacts:
-    return prepare_review_artifacts(
-        project=project,
-        task=task,
-    )
 
 
 @app.command()
@@ -208,11 +199,13 @@ def register(
     console.print(
         Panel.fit(
             (
-                "[bold green]Registered[/bold green]\n"
+                "[bold green]"
+                "Registered"
+                "[/bold green]\n"
                 f"Project: {project.name}\n"
                 f"ID: {project.id}\n"
                 f"Path: {project.path}\n"
-                f"Remote: "
+                "Remote: "
                 f"{project.remote_url or 'none'}"
             ),
             title="Aiflow",
@@ -342,8 +335,10 @@ def start(
         _fail(str(exc))
 
     next_step = (
-        "The planning prompt is on your clipboard.\n"
-        "1. Paste it into ChatGPT Web using Sol.\n"
+        "The planning prompt is on your "
+        "clipboard.\n"
+        "1. Paste it into ChatGPT Web "
+        "using Sol.\n"
         "2. Copy the final "
         "AIFLOW_PACKET_V1 response.\n"
         "3. Run: "
@@ -355,11 +350,14 @@ def start(
     console.print(
         Panel.fit(
             (
-                "[bold green]Task created[/bold green]\n"
+                "[bold green]"
+                "Task created"
+                "[/bold green]\n"
                 f"Project: {project.name}\n"
                 f"Task ID: {task.id}\n"
                 f"Base SHA: {task.base_sha}\n"
-                f"Task files: {task.task_dir}\n\n"
+                f"Task files: "
+                f"{task.task_dir}\n\n"
                 f"{next_step}"
             ),
             title="Waiting for Sol plan",
@@ -441,7 +439,8 @@ def import_packet(
         if packet.envelope.stage != PacketStage.IMPLEMENTATION_PLAN:
             raise PacketError(
                 "this command currently accepts "
-                "implementation_plan packets, got "
+                "implementation_plan packets, "
+                "got "
                 f"{packet.envelope.stage}"
             )
 
@@ -534,20 +533,25 @@ def import_packet(
     console.print(
         Panel.fit(
             (
-                "[bold green]Plan imported[/bold green]\n"
+                "[bold green]"
+                "Plan imported"
+                "[/bold green]\n"
                 f"Project: {project.name}\n"
                 f"Task: {task.id}\n"
                 "Model: "
                 f"{packet.envelope.execution.model_role.value}\n"
                 "Reasoning: "
                 f"{packet.envelope.execution.reasoning_effort.value}\n"
-                f"Risk: {packet.envelope.risk.level}\n"
+                "Risk: "
+                f"{packet.envelope.risk.level}\n"
                 f"Plan: {plan_path}\n"
                 "Implementation prompt: "
                 f"{implementation_prompt_path}"
                 f"{warning}\n\n"
-                "Preview the eventual command with:\n"
-                f"aiflow run {task.id} --dry-run"
+                "Preview the eventual command "
+                "with:\n"
+                f"aiflow run {task.id} "
+                "--dry-run"
             ),
             title="Ready for implementation",
         )
@@ -728,8 +732,9 @@ def run(
             Panel.fit(
                 (
                     "[bold yellow]"
-                    "Codex implementation completed, "
-                    "but validation did not pass."
+                    "Codex implementation "
+                    "completed, but validation "
+                    "did not pass."
                     "[/bold yellow]\n"
                     "Summary: "
                     f"{validation_summary.summary_path}\n"
@@ -748,30 +753,6 @@ def run(
 
         raise typer.Exit(1)
 
-    review_artifacts = None
-
-    try:
-        review_artifacts = _build_review_artifacts(
-            project=project,
-            task=task,
-        )
-    except (
-        AiflowError,
-        OSError,
-    ) as exc:
-        console.print(
-            "[yellow]"
-            "Validation passed, but Aiflow "
-            "could not prepare review artifacts: "
-            f"{exc}"
-            "[/yellow]"
-        )
-
-    review_detail = ""
-
-    if review_artifacts is not None:
-        review_detail = f"\nReview prompt: {review_artifacts.prompt_path}"
-
     console.print(
         Panel.fit(
             (
@@ -784,8 +765,8 @@ def run(
                 "Validation summary: "
                 f"{validation_summary.summary_path}\n"
                 "Validation commands: "
-                f"{len(validation_summary.results)}"
-                f"{review_detail}\n\n"
+                f"{len(validation_summary.results)}\n"
+                "Status: review_ready\n\n"
                 "Next:\n"
                 f"aiflow prepare-review {task.id}"
             ),
@@ -842,7 +823,8 @@ def validate(
                     "[bold yellow]"
                     "Validation did not pass."
                     "[/bold yellow]\n"
-                    f"Summary: {summary.summary_path}\n"
+                    f"Summary: "
+                    f"{summary.summary_path}\n"
                     "Commands discovered: "
                     f"{len(summary.commands)}\n"
                     "Commands failed: "
@@ -852,31 +834,8 @@ def validate(
                 title="Validation failed",
             )
         )
+
         raise typer.Exit(1)
-
-    review_artifacts = None
-
-    try:
-        review_artifacts = _build_review_artifacts(
-            project=project,
-            task=task,
-        )
-    except (
-        AiflowError,
-        OSError,
-    ) as exc:
-        console.print(
-            "[yellow]"
-            "Validation passed, but Aiflow "
-            "could not prepare review artifacts: "
-            f"{exc}"
-            "[/yellow]"
-        )
-
-    review_detail = ""
-
-    if review_artifacts is not None:
-        review_detail = f"\nReview prompt: {review_artifacts.prompt_path}"
 
     console.print(
         Panel.fit(
@@ -884,11 +843,13 @@ def validate(
                 "[bold green]"
                 "Validation passed."
                 "[/bold green]\n"
-                f"Summary: {summary.summary_path}\n"
+                f"Summary: "
+                f"{summary.summary_path}\n"
                 "Validation commands: "
-                f"{len(summary.results)}"
-                f"{review_detail}\n"
-                "Status: review_ready"
+                f"{len(summary.results)}\n"
+                "Status: review_ready\n\n"
+                "Next:\n"
+                f"aiflow prepare-review {task.id}"
             ),
             title="Ready for Sol review",
         )
@@ -911,7 +872,7 @@ def prepare_review(
         ),
     ] = True,
 ) -> None:
-    """Generate the local evidence bundle and Sol review prompt."""
+    """Revalidate current worktree and generate the Sol review bundle."""
     try:
         db = _db()
 
@@ -938,6 +899,37 @@ def prepare_review(
             require_clean=False,
         )
 
+        validation_summary = validate_implemented_task(
+            db=db,
+            project=project,
+            task_id=task.id,
+        )
+
+        if not validation_summary.passed:
+            failed_count = sum(not result.passed for result in validation_summary.results)
+
+            console.print(
+                Panel.fit(
+                    (
+                        "[bold yellow]"
+                        "Current worktree did not "
+                        "pass validation. No review "
+                        "prompt was generated."
+                        "[/bold yellow]\n"
+                        "Summary: "
+                        f"{validation_summary.summary_path}\n"
+                        "Commands discovered: "
+                        f"{len(validation_summary.commands)}\n"
+                        "Commands failed: "
+                        f"{failed_count}\n"
+                        "Status: validation_failed"
+                    ),
+                    title=("Review preparation stopped"),
+                )
+            )
+
+            raise typer.Exit(1)
+
         artifacts = prepare_review_artifacts(
             project=project,
             task=task,
@@ -953,6 +945,12 @@ def prepare_review(
                 status=(TaskStatus.WAITING_FOR_REVIEW),
             )
 
+    except KeyboardInterrupt:
+        _fail(
+            "validation interrupted by user",
+            code=130,
+        )
+
     except (
         AiflowError,
         OSError,
@@ -960,9 +958,16 @@ def prepare_review(
         _fail(str(exc))
 
     next_step = (
-        "The review prompt is on your clipboard.\nPaste it into ChatGPT Web using Sol."
+        "The freshly validated review "
+        "prompt is on your clipboard.\n"
+        "Paste it into ChatGPT Web using Sol."
         if copy
-        else ("Open the review prompt and copy it when you are ready for Sol review.")
+        else (
+            "The freshly validated review "
+            "prompt is ready. Open and copy "
+            "it when you are ready for "
+            "Sol review."
+        )
     )
 
     console.print(
@@ -972,6 +977,8 @@ def prepare_review(
                 "Review bundle prepared."
                 "[/bold green]\n"
                 f"Task: {task.id}\n"
+                "Fresh validation: "
+                f"{validation_summary.summary_path}\n"
                 "Evidence: "
                 f"{artifacts.evidence_path}\n"
                 "Codex event summary: "

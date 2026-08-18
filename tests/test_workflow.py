@@ -3,18 +3,27 @@ from pathlib import Path
 import pytest
 
 from aiflow.db import Database
-from aiflow.models import ProjectRecord, TaskStatus
+from aiflow.models import (
+    ProjectRecord,
+    TaskStatus,
+)
 from aiflow.validation import (
     ValidationCommand,
     ValidationResult,
     ValidationSummary,
 )
-from aiflow.workflow import validate_implemented_task
+from aiflow.workflow import (
+    validate_implemented_task,
+)
 
 
 def _setup_task(
     tmp_path: Path,
-) -> tuple[Database, ProjectRecord, str]:
+) -> tuple[
+    Database,
+    ProjectRecord,
+    str,
+]:
     db = Database(tmp_path / "aiflow.db")
 
     project = db.upsert_project(
@@ -47,6 +56,7 @@ def _successful_summary(
     tmp_path: Path,
 ) -> ValidationSummary:
     output_path = tmp_path / "validation.log"
+
     output_path.write_text(
         "passed\n",
         encoding="utf-8",
@@ -68,7 +78,7 @@ def _successful_summary(
                 output_path=output_path,
             ),
         ),
-        summary_path=tmp_path / "summary.json",
+        summary_path=(tmp_path / "summary.json"),
     )
 
 
@@ -76,6 +86,7 @@ def _failed_summary(
     tmp_path: Path,
 ) -> ValidationSummary:
     output_path = tmp_path / "validation.log"
+
     output_path.write_text(
         "failed\n",
         encoding="utf-8",
@@ -97,7 +108,7 @@ def _failed_summary(
                 output_path=output_path,
             ),
         ),
-        summary_path=tmp_path / "summary.json",
+        summary_path=(tmp_path / "summary.json"),
     )
 
 
@@ -110,7 +121,7 @@ def test_validation_success_marks_review_ready(
     summary = _successful_summary(tmp_path)
 
     monkeypatch.setattr(
-        "aiflow.workflow.run_project_validations",
+        ("aiflow.workflow.run_project_validations"),
         lambda **_kwargs: summary,
     )
 
@@ -137,7 +148,7 @@ def test_validation_failure_marks_validation_failed(
     summary = _failed_summary(tmp_path)
 
     monkeypatch.setattr(
-        "aiflow.workflow.run_project_validations",
+        ("aiflow.workflow.run_project_validations"),
         lambda **_kwargs: summary,
     )
 
@@ -167,13 +178,13 @@ def test_validation_exception_marks_validation_failed(
         raise OSError("simulated validation failure")
 
     monkeypatch.setattr(
-        "aiflow.workflow.run_project_validations",
+        ("aiflow.workflow.run_project_validations"),
         fail_validation,
     )
 
     with pytest.raises(
         OSError,
-        match="simulated validation failure",
+        match=("simulated validation failure"),
     ):
         validate_implemented_task(
             db=db,
@@ -195,13 +206,45 @@ def test_validation_failed_task_can_be_revalidated(
 
     db.update_task_status(
         task_id=task_id,
-        status=TaskStatus.VALIDATION_FAILED,
+        status=(TaskStatus.VALIDATION_FAILED),
     )
 
     summary = _successful_summary(tmp_path)
 
     monkeypatch.setattr(
-        "aiflow.workflow.run_project_validations",
+        ("aiflow.workflow.run_project_validations"),
+        lambda **_kwargs: summary,
+    )
+
+    result = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    assert result.passed is True
+
+    task = db.get_task(task_id)
+
+    assert task is not None
+    assert task.status == TaskStatus.REVIEW_READY
+
+
+def test_waiting_for_review_task_can_be_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, task_id = _setup_task(tmp_path)
+
+    db.update_task_status(
+        task_id=task_id,
+        status=(TaskStatus.WAITING_FOR_REVIEW),
+    )
+
+    summary = _successful_summary(tmp_path)
+
+    monkeypatch.setattr(
+        ("aiflow.workflow.run_project_validations"),
         lambda **_kwargs: summary,
     )
 

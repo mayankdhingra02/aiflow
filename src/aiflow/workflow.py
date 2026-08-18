@@ -26,6 +26,7 @@ def validate_implemented_task(
         TaskStatus.IMPLEMENTED,
         TaskStatus.VALIDATION_FAILED,
         TaskStatus.REVIEW_READY,
+        TaskStatus.WAITING_FOR_REVIEW,
     }:
         raise StateError(f"task cannot be validated from status {task.status.value}")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,37 @@ SENSITIVE_SUFFIXES = {
     ".pfx",
 }
 
+CREDENTIAL_PATTERNS = (
+    re.compile(
+        r"-----BEGIN "
+        r"(?:RSA |DSA |EC |OPENSSH )?"
+        r"PRIVATE KEY-----"
+    ),
+    re.compile(r"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    re.compile(
+        r"\bsk-"
+        r"(?:proj-|svcacct-)?"
+        r"[A-Za-z0-9_-]{20,}\b"
+    ),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b"),
+    re.compile(
+        r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bAWS_SECRET_ACCESS_KEY"
+        r"\s*[:=]\s*"
+        r"""["']?[A-Za-z0-9/+=]{40}["']?""",
+        re.IGNORECASE,
+    ),
+)
+
 
 @dataclass(frozen=True)
 class GitReviewEvidence:
@@ -54,11 +86,16 @@ class ReviewArtifacts:
     codex_summary_path: Path
 
 
+def _contains_credential_like_content(
+    text: str,
+) -> bool:
+    return any(pattern.search(text) for pattern in CREDENTIAL_PATTERNS)
+
+
 def _looks_sensitive(
     path: str,
 ) -> bool:
     candidate = Path(path)
-
     basename = candidate.name.lower()
 
     if basename in SENSITIVE_BASENAMES:
@@ -71,7 +108,7 @@ def _looks_sensitive(
     }:
         return True
 
-    if candidate.suffix.lower() in (SENSITIVE_SUFFIXES):
+    if candidate.suffix.lower() in SENSITIVE_SUFFIXES:
         return True
 
     lowered_parts = {part.lower() for part in candidate.parts}
@@ -83,6 +120,79 @@ def _looks_sensitive(
             ".ssh",
             "secrets",
         }
+    )
+
+
+def _safe_display_path(
+    path: str,
+) -> str:
+    if _contains_credential_like_content(path):
+        return "[sensitive path omitted]"
+
+    return path
+
+
+def _replace_local_paths(
+    text: str,
+    *,
+    root: Path,
+) -> str:
+    replacements: list[tuple[str, str]] = []
+
+    try:
+        repository_root = str(root.resolve())
+    except OSError:
+        repository_root = str(root)
+
+    try:
+        home = str(Path.home().resolve())
+    except OSError:
+        home = str(Path.home())
+
+    if repository_root and repository_root != "/":
+        replacements.append(
+            (
+                repository_root,
+                "<REPOSITORY_ROOT>",
+            )
+        )
+
+    if home and home != "/":
+        replacements.append(
+            (
+                home,
+                "<HOME>",
+            )
+        )
+
+    sanitized = text
+
+    for source, replacement in sorted(
+        replacements,
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        sanitized = sanitized.replace(
+            source,
+            replacement,
+        )
+
+    return sanitized
+
+
+def _sanitize_outbound_artifact(
+    text: str,
+    *,
+    root: Path,
+    label: str,
+    omit_if_credential: bool = True,
+) -> str:
+    if omit_if_credential and _contains_credential_like_content(text):
+        return f"[Aiflow omitted {label} because credential-like material was detected.]"
+
+    return _replace_local_paths(
+        text,
+        root=root,
     )
 
 
@@ -199,10 +309,15 @@ def collect_git_review_evidence(
     current_size = 0
 
     for path in changed_files:
-        if _looks_sensitive(path):
+        display_path = _safe_display_path(path)
+
+        if _looks_sensitive(path) or _contains_credential_like_content(path):
             omitted_files.append(path)
             sections.append(
-                f"### {path}\n[Aiflow omitted this diff because the path may contain secrets.]"
+                f"### {display_path}\n"
+                "[Aiflow omitted this diff "
+                "because the path may contain "
+                "sensitive material.]"
             )
             continue
 
@@ -219,10 +334,20 @@ def collect_git_review_evidence(
             required=False,
         )
 
+        if _contains_credential_like_content(diff):
+            omitted_files.append(path)
+            sections.append(
+                f"### {display_path}\n"
+                "[Aiflow omitted this diff "
+                "because credential-like "
+                "material was detected.]"
+            )
+            continue
+
         if len(diff) > MAX_DIFF_PER_FILE:
             diff = diff[:MAX_DIFF_PER_FILE] + "\n… [file diff truncated by Aiflow]"
 
-        section = f"### {path}\n<aiflow_diff>\n{diff}\n</aiflow_diff>"
+        section = f"### {display_path}\n<aiflow_diff>\n{diff}\n</aiflow_diff>"
 
         remaining = MAX_DIFF_TOTAL - current_size
 
@@ -239,14 +364,16 @@ def collect_git_review_evidence(
         if current_size >= MAX_DIFF_TOTAL:
             break
 
-        if _looks_sensitive(path):
+        display_path = _safe_display_path(path)
+
+        if _looks_sensitive(path) or _contains_credential_like_content(path):
             omitted_files.append(path)
             sections.append(
-                "### "
-                f"{path} (untracked)\n"
+                f"### {display_path} "
+                "(untracked)\n"
                 "[Aiflow omitted this file "
-                "because the path may "
-                "contain secrets.]"
+                "because the path may contain "
+                "sensitive material.]"
             )
             continue
 
@@ -258,11 +385,22 @@ def collect_git_review_evidence(
         if text is None:
             omitted_files.append(path)
             sections.append(
-                f"### {path} (untracked)\n[Aiflow omitted this non-regular or unsafe file.]"
+                f"### {display_path} (untracked)\n[Aiflow omitted this non-regular or unsafe file.]"
             )
             continue
 
-        section = f"### {path} (untracked)\n<aiflow_new_file>\n{text}\n</aiflow_new_file>"
+        if _contains_credential_like_content(text):
+            omitted_files.append(path)
+            sections.append(
+                f"### {display_path} "
+                "(untracked)\n"
+                "[Aiflow omitted this file "
+                "because credential-like "
+                "material was detected.]"
+            )
+            continue
+
+        section = f"### {display_path} (untracked)\n<aiflow_new_file>\n{text}\n</aiflow_new_file>"
 
         remaining = MAX_DIFF_TOTAL - current_size
 
@@ -321,11 +459,17 @@ def prepare_review_artifacts(
 
     evidence_path = task.task_dir / "review-evidence.md"
 
-    omitted = "\n".join(f"- {path}" for path in evidence.omitted_files) or "None"
+    omitted = (
+        "\n".join("- " + _safe_display_path(path) for path in evidence.omitted_files) or "None"
+    )
 
-    changed = "\n".join(f"- {path}" for path in evidence.changed_files) or "None"
+    changed = (
+        "\n".join("- " + _safe_display_path(path) for path in evidence.changed_files) or "None"
+    )
 
-    untracked = "\n".join(f"- {path}" for path in evidence.untracked_files) or "None"
+    untracked = (
+        "\n".join("- " + _safe_display_path(path) for path in evidence.untracked_files) or "None"
+    )
 
     evidence_text = (
         "# Aiflow Review Evidence\n\n"
@@ -341,10 +485,17 @@ def prepare_review_artifacts(
         f"{changed}\n\n"
         "## Untracked files\n\n"
         f"{untracked}\n\n"
-        "## Files omitted from content evidence\n\n"
+        "## Files omitted from "
+        "content evidence\n\n"
         f"{omitted}\n\n"
         "## Implementation diff\n\n"
         f"{evidence.diff_markdown}\n"
+    )
+
+    evidence_text = _sanitize_outbound_artifact(
+        evidence_text,
+        root=project.path,
+        label="Git review evidence",
     )
 
     evidence_path.write_text(
@@ -358,14 +509,44 @@ def prepare_review_artifacts(
 
     validation_path = task.task_dir / "validation-summary.json"
 
+    plan_body = _sanitize_outbound_artifact(
+        _read_task_artifact(plan_path),
+        root=project.path,
+        label=("approved implementation plan"),
+        omit_if_credential=False,
+    )
+
+    implementation_report = _sanitize_outbound_artifact(
+        _read_task_artifact(report_path),
+        root=project.path,
+        label=("Codex implementation report"),
+    )
+
+    validation_summary = _sanitize_outbound_artifact(
+        _read_task_artifact(validation_path),
+        root=project.path,
+        label=("deterministic validation summary"),
+    )
+
+    codex_event_summary = _sanitize_outbound_artifact(
+        _read_task_artifact(codex_summary_path),
+        root=project.path,
+        label=("Codex event summary"),
+    )
+
     prompt = build_review_prompt(
         project=project,
         task=task,
-        plan_body=_read_task_artifact(plan_path),
-        implementation_report=(_read_task_artifact(report_path)),
-        validation_summary=(_read_task_artifact(validation_path)),
-        codex_event_summary=(_read_task_artifact(codex_summary_path)),
+        plan_body=plan_body,
+        implementation_report=(implementation_report),
+        validation_summary=(validation_summary),
+        codex_event_summary=(codex_event_summary),
         git_evidence=evidence_text,
+    )
+
+    prompt = _replace_local_paths(
+        prompt,
+        root=project.path,
     )
 
     prompt_path = task.task_dir / "review-prompt.md"
