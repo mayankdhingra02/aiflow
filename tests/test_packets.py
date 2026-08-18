@@ -79,3 +79,14 @@ def test_validate_packet_for_task_rejects_nonce_mismatch() -> None:
     parsed = parse_packet(_packet(payload))
     with pytest.raises(PacketError, match="nonce mismatch"):
         validate_packet_for_task(parsed, _task())
+
+
+def test_validate_packet_rejects_plan_for_task_that_already_has_plan() -> None:
+    parsed = parse_packet(_packet())
+    task = _task().model_copy(update={"status": TaskStatus.READY_TO_RUN})
+
+    with pytest.raises(
+        PacketError,
+        match="not waiting for an implementation plan",
+    ):
+        validate_packet_for_task(parsed, task)
