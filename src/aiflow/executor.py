@@ -34,10 +34,21 @@ def display_command(command: list[str]) -> str:
 def execute_codex(spec: CodexRunSpec) -> int:
     if not shutil.which("codex"):
         raise StateError("Codex CLI is not installed or is not on PATH")
+
     if not spec.prompt_path.exists():
         raise StateError(f"implementation prompt does not exist: {spec.prompt_path}")
 
     command = build_codex_command(spec)
-    with spec.prompt_path.open("r", encoding="utf-8") as prompt:
-        result = subprocess.run(command, stdin=prompt, cwd=spec.repository_path, check=False)
+
+    try:
+        with spec.prompt_path.open("r", encoding="utf-8") as prompt:
+            result = subprocess.run(
+                command,
+                stdin=prompt,
+                cwd=spec.repository_path,
+                check=False,
+            )
+    except OSError as exc:
+        raise StateError(f"Codex could not be executed: {exc}") from exc
+
     return result.returncode

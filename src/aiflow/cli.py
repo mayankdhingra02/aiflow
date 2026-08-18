@@ -432,11 +432,17 @@ def run(
         task = db.get_task(task_id)
         if task is None:
             raise StateError(f"unknown task ID: {task_id}")
-        if task.status != TaskStatus.READY_TO_RUN:
+
+        if task.status not in {
+            TaskStatus.READY_TO_RUN,
+            TaskStatus.FAILED,
+        }:
             raise StateError(f"task is not ready to run; current status is {task.status.value}")
+
         project = db.get_project(task.project_id)
         if project is None:
             raise StateError(f"project no longer exists: {task.project_id}")
+
         if not task.recommended_model or not task.reasoning_effort:
             raise StateError("task does not contain a model recommendation")
 
@@ -449,6 +455,7 @@ def run(
         model_id = MODEL_BY_ROLE[task.recommended_model]
         prompt_path = task.task_dir / "implementation-prompt.md"
         report_path = task.task_dir / "implementation-report.md"
+
         if task.requires_human_approval and not approve_high_risk and not dry_run:
             raise StateError(
                 "this plan requires explicit high-risk approval; "
@@ -494,6 +501,15 @@ def run(
 
     try:
         exit_code = execute_codex(spec)
+    except KeyboardInterrupt:
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+        )
+        _fail(
+            "Codex execution interrupted by user",
+            code=130,
+        )
     except AiflowError as exc:
         db.update_task_status(
             task_id=task.id,
