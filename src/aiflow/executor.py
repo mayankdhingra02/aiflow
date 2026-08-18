@@ -3,22 +3,26 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 from aiflow.errors import StateError
 from aiflow.models import CodexRunSpec
 
 
-def build_codex_command(spec: CodexRunSpec) -> list[str]:
+def build_codex_command(
+    spec: CodexRunSpec,
+) -> list[str]:
     return [
         "codex",
         "exec",
         "--ignore-user-config",
+        "--json",
         "-C",
         str(spec.repository_path),
         "-m",
         spec.model_id,
         "--config",
-        f'model_reasoning_effort="{spec.reasoning_effort}"',
+        (f'model_reasoning_effort="{spec.reasoning_effort}"'),
         "--sandbox",
         spec.sandbox,
         "--output-last-message",
@@ -27,11 +31,17 @@ def build_codex_command(spec: CodexRunSpec) -> list[str]:
     ]
 
 
-def display_command(command: list[str]) -> str:
+def display_command(
+    command: list[str],
+) -> str:
     return " \\\n  ".join(shlex.quote(part) for part in command)
 
 
-def execute_codex(spec: CodexRunSpec) -> int:
+def execute_codex(
+    spec: CodexRunSpec,
+    *,
+    events_path: Path | None = None,
+) -> int:
     if not shutil.which("codex"):
         raise StateError("Codex CLI is not installed or is not on PATH")
 
@@ -41,13 +51,41 @@ def execute_codex(spec: CodexRunSpec) -> int:
     command = build_codex_command(spec)
 
     try:
-        with spec.prompt_path.open("r", encoding="utf-8") as prompt:
-            result = subprocess.run(
-                command,
-                stdin=prompt,
-                cwd=spec.repository_path,
-                check=False,
+        if events_path is None:
+            with spec.prompt_path.open(
+                "r",
+                encoding="utf-8",
+            ) as prompt:
+                result = subprocess.run(
+                    command,
+                    stdin=prompt,
+                    cwd=spec.repository_path,
+                    check=False,
+                )
+        else:
+            events_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
             )
+
+            with (
+                spec.prompt_path.open(
+                    "r",
+                    encoding="utf-8",
+                ) as prompt,
+                events_path.open(
+                    "w",
+                    encoding="utf-8",
+                ) as events,
+            ):
+                result = subprocess.run(
+                    command,
+                    stdin=prompt,
+                    stdout=events,
+                    cwd=spec.repository_path,
+                    check=False,
+                )
+
     except OSError as exc:
         raise StateError(f"Codex could not be executed: {exc}") from exc
 

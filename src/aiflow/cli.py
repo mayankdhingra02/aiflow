@@ -37,6 +37,8 @@ from aiflow.git import (
 from aiflow.models import (
     CodexRunSpec,
     PacketStage,
+    ProjectRecord,
+    TaskRecord,
     TaskStatus,
 )
 from aiflow.packets import (
@@ -50,6 +52,10 @@ from aiflow.paths import (
 from aiflow.prompts import (
     build_implementation_prompt,
     build_planner_prompt,
+)
+from aiflow.review import (
+    ReviewArtifacts,
+    prepare_review_artifacts,
 )
 from aiflow.workflow import (
     validate_implemented_task,
@@ -93,6 +99,17 @@ def _current_project(
         )
 
     return project, facts
+
+
+def _build_review_artifacts(
+    *,
+    project: ProjectRecord,
+    task: TaskRecord,
+) -> ReviewArtifacts:
+    return prepare_review_artifacts(
+        project=project,
+        task=task,
+    )
 
 
 @app.command()
@@ -260,6 +277,7 @@ def start(
 
     try:
         db = _db()
+
         project, facts = _current_project(
             db,
             path,
@@ -479,9 +497,9 @@ def import_packet(
         )
 
         db.record_packet(
-            packet_id=packet.envelope.packet_id,
+            packet_id=(packet.envelope.packet_id),
             task_id=task.id,
-            stage=packet.envelope.stage.value,
+            stage=(packet.envelope.stage.value),
             sha256=packet.sha256,
         )
 
@@ -599,6 +617,8 @@ def run(
 
         report_path = task.task_dir / "implementation-report.md"
 
+        events_path = task.task_dir / "codex-events.jsonl"
+
         if task.requires_human_approval and not approve_high_risk and not dry_run:
             raise StateError(
                 "this plan requires explicit "
@@ -631,7 +651,9 @@ def run(
                 "Risk: "
                 f"{task.risk_level or 'unknown'}\n"
                 "Explicit approval required: "
-                f"{task.requires_human_approval}\n\n"
+                f"{task.requires_human_approval}\n"
+                "Codex events: "
+                f"{events_path}\n\n"
                 "[bold]Command[/bold]\n"
                 f"{display_command(command)}"
             ),
@@ -653,7 +675,10 @@ def run(
     )
 
     try:
-        exit_code = execute_codex(spec)
+        exit_code = execute_codex(
+            spec,
+            events_path=events_path,
+        )
 
     except KeyboardInterrupt:
         db.update_task_status(
@@ -708,16 +733,44 @@ def run(
                     "[/bold yellow]\n"
                     "Summary: "
                     f"{validation_summary.summary_path}\n"
+                    "Codex events: "
+                    f"{events_path}\n"
                     "Commands discovered: "
                     f"{len(validation_summary.commands)}\n"
                     "Commands failed: "
-                    f"{failed_count}"
+                    f"{failed_count}\n\n"
+                    "Fix the issue and rerun:\n"
+                    f"aiflow validate {task.id}"
                 ),
                 title="Validation failed",
             )
         )
 
         raise typer.Exit(1)
+
+    review_artifacts = None
+
+    try:
+        review_artifacts = _build_review_artifacts(
+            project=project,
+            task=task,
+        )
+    except (
+        AiflowError,
+        OSError,
+    ) as exc:
+        console.print(
+            "[yellow]"
+            "Validation passed, but Aiflow "
+            "could not prepare review artifacts: "
+            f"{exc}"
+            "[/yellow]"
+        )
+
+    review_detail = ""
+
+    if review_artifacts is not None:
+        review_detail = f"\nReview prompt: {review_artifacts.prompt_path}"
 
     console.print(
         Panel.fit(
@@ -727,11 +780,14 @@ def run(
                 "completed."
                 "[/bold green]\n"
                 f"Codex report: {report_path}\n"
+                f"Codex events: {events_path}\n"
                 "Validation summary: "
                 f"{validation_summary.summary_path}\n"
                 "Validation commands: "
-                f"{len(validation_summary.results)}\n"
-                "Status: review_ready"
+                f"{len(validation_summary.results)}"
+                f"{review_detail}\n\n"
+                "Next:\n"
+                f"aiflow prepare-review {task.id}"
             ),
             title="Ready for Sol review",
         )
@@ -743,7 +799,7 @@ def validate(
     task_id: Annotated[
         str,
         typer.Argument(
-            help="Task ID to validate or revalidate.",
+            help=("Task ID to validate or revalidate."),
         ),
     ],
 ) -> None:
@@ -771,7 +827,10 @@ def validate(
             "validation interrupted by user",
             code=130,
         )
-    except (AiflowError, OSError) as exc:
+    except (
+        AiflowError,
+        OSError,
+    ) as exc:
         _fail(str(exc))
 
     failed_count = sum(not result.passed for result in summary.results)
@@ -795,6 +854,30 @@ def validate(
         )
         raise typer.Exit(1)
 
+    review_artifacts = None
+
+    try:
+        review_artifacts = _build_review_artifacts(
+            project=project,
+            task=task,
+        )
+    except (
+        AiflowError,
+        OSError,
+    ) as exc:
+        console.print(
+            "[yellow]"
+            "Validation passed, but Aiflow "
+            "could not prepare review artifacts: "
+            f"{exc}"
+            "[/yellow]"
+        )
+
+    review_detail = ""
+
+    if review_artifacts is not None:
+        review_detail = f"\nReview prompt: {review_artifacts.prompt_path}"
+
     console.print(
         Panel.fit(
             (
@@ -803,10 +886,101 @@ def validate(
                 "[/bold green]\n"
                 f"Summary: {summary.summary_path}\n"
                 "Validation commands: "
-                f"{len(summary.results)}\n"
+                f"{len(summary.results)}"
+                f"{review_detail}\n"
                 "Status: review_ready"
             ),
             title="Ready for Sol review",
+        )
+    )
+
+
+@app.command("prepare-review")
+def prepare_review(
+    task_id: Annotated[
+        str,
+        typer.Argument(
+            help=("Task ID whose implementation should be prepared for Sol review."),
+        ),
+    ],
+    copy: Annotated[
+        bool,
+        typer.Option(
+            "--copy/--no-copy",
+            help=("Copy the generated review prompt to the clipboard."),
+        ),
+    ] = True,
+) -> None:
+    """Generate the local evidence bundle and Sol review prompt."""
+    try:
+        db = _db()
+
+        task = db.get_task(task_id)
+
+        if task is None:
+            raise StateError(f"unknown task ID: {task_id}")
+
+        if task.status not in {
+            TaskStatus.REVIEW_READY,
+            TaskStatus.WAITING_FOR_REVIEW,
+        }:
+            raise StateError(f"task is not ready for review; current status is {task.status.value}")
+
+        project = db.get_project(task.project_id)
+
+        if project is None:
+            raise StateError(f"project no longer exists: {task.project_id}")
+
+        validate_repository_state(
+            project.path,
+            expected_sha=task.base_sha,
+            expected_branch=task.branch,
+            require_clean=False,
+        )
+
+        artifacts = prepare_review_artifacts(
+            project=project,
+            task=task,
+        )
+
+        if copy:
+            review_prompt = artifacts.prompt_path.read_text(encoding="utf-8")
+
+            copy_text(review_prompt)
+
+            db.update_task_status(
+                task_id=task.id,
+                status=(TaskStatus.WAITING_FOR_REVIEW),
+            )
+
+    except (
+        AiflowError,
+        OSError,
+    ) as exc:
+        _fail(str(exc))
+
+    next_step = (
+        "The review prompt is on your clipboard.\nPaste it into ChatGPT Web using Sol."
+        if copy
+        else ("Open the review prompt and copy it when you are ready for Sol review.")
+    )
+
+    console.print(
+        Panel.fit(
+            (
+                "[bold green]"
+                "Review bundle prepared."
+                "[/bold green]\n"
+                f"Task: {task.id}\n"
+                "Evidence: "
+                f"{artifacts.evidence_path}\n"
+                "Codex event summary: "
+                f"{artifacts.codex_summary_path}\n"
+                "Review prompt: "
+                f"{artifacts.prompt_path}\n\n"
+                f"{next_step}"
+            ),
+            title="Waiting for Sol review",
         )
     )
 
