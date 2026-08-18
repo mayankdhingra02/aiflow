@@ -14,6 +14,8 @@ class TaskStatus(StrEnum):
     READY_TO_RUN = "ready_to_run"
     RUNNING = "running"
     IMPLEMENTED = "implemented"
+    VALIDATING = "validating"
+    VALIDATION_FAILED = "validation_failed"
     REVIEW_READY = "review_ready"
     WAITING_FOR_REVIEW = "waiting_for_review"
     REVIEW_IMPORTED = "review_imported"
