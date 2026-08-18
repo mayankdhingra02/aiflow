@@ -18,7 +18,11 @@ from aiflow.constants import MODEL_BY_ROLE
 from aiflow.db import Database
 from aiflow.errors import AiflowError, PacketError, StateError
 from aiflow.executor import build_codex_command, display_command, execute_codex
-from aiflow.git import inspect_repository, repository_context
+from aiflow.git import (
+    inspect_repository,
+    repository_context,
+    validate_repository_state,
+)
 from aiflow.models import CodexRunSpec, PacketStage, TaskStatus
 from aiflow.packets import parse_packet, validate_packet_for_task
 from aiflow.paths import app_home, task_directory
@@ -170,13 +174,6 @@ def start(
             resolve_path=True,
         ),
     ] = None,
-    allow_dirty: Annotated[
-        bool,
-        typer.Option(
-            "--allow-dirty",
-            help="Allow a dirty working tree.",
-        ),
-    ] = False,
     copy: Annotated[
         bool,
         typer.Option(
@@ -191,20 +188,25 @@ def start(
     try:
         db = _db()
         project, facts = _current_project(db, path)
-        if facts.dirty and not allow_dirty:
+        if facts.dirty:
             raise StateError(
-                "the repository has uncommitted changes; commit/stash them or pass --allow-dirty"
+                "the repository has uncommitted changes; "
+                "commit or stash them before starting an Aiflow task"
             )
+
+        normalized_request = request.strip()
+        if not normalized_request:
+            raise StateError("task request cannot be empty")
 
         task_id = f"{project.id}-{uuid.uuid4().hex[:12]}"
         nonce = secrets.token_hex(16)
         task_dir = task_directory(task_id)
-        title = request.strip().splitlines()[0][:100]
+        title = normalized_request.splitlines()[0][:100]
         task = db.create_task(
             task_id=task_id,
             project_id=project.id,
             title=title,
-            request=request.strip(),
+            request=normalized_request,
             nonce=nonce,
             base_sha=facts.head_sha,
             branch=facts.branch,
@@ -220,7 +222,7 @@ def start(
         prompt_path = task_dir / "planner-prompt.md"
         request_path = task_dir / "request.md"
         prompt_path.write_text(prompt, encoding="utf-8")
-        request_path.write_text(request.strip() + "\n", encoding="utf-8")
+        request_path.write_text(normalized_request + "\n", encoding="utf-8")
         if copy:
             copy_text(prompt)
     except AiflowError as exc:
@@ -330,12 +332,11 @@ def import_packet(
         if project is None:
             raise StateError(f"project no longer exists: {task.project_id}")
 
-        facts = inspect_repository(project.path)
-        if facts.head_sha.lower() != task.base_sha.lower():
-            raise StateError(
-                "repository HEAD changed after planning started; "
-                "create a fresh task or restore the base SHA"
-            )
+        validate_repository_state(
+            project.path,
+            expected_sha=task.base_sha,
+            expected_branch=task.branch,
+        )
 
         plan_path = task.task_dir / "plan.md"
         raw_packet_path = task.task_dir / "plan-packet.txt"
@@ -439,6 +440,12 @@ def run(
         if not task.recommended_model or not task.reasoning_effort:
             raise StateError("task does not contain a model recommendation")
 
+        validate_repository_state(
+            project.path,
+            expected_sha=task.base_sha,
+            expected_branch=task.branch,
+        )
+
         model_id = MODEL_BY_ROLE[task.recommended_model]
         prompt_path = task.task_dir / "implementation-prompt.md"
         report_path = task.task_dir / "implementation-report.md"
@@ -480,13 +487,34 @@ def run(
         console.print("Cancelled.")
         return
 
+    db.update_task_status(
+        task_id=task.id,
+        status=TaskStatus.RUNNING,
+    )
+
     try:
         exit_code = execute_codex(spec)
     except AiflowError as exc:
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+        )
         _fail(str(exc))
 
     if exit_code != 0:
-        _fail(f"Codex exited with status {exit_code}", code=exit_code)
+        db.update_task_status(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+        )
+        _fail(
+            f"Codex exited with status {exit_code}",
+            code=exit_code,
+        )
+
+    db.update_task_status(
+        task_id=task.id,
+        status=TaskStatus.IMPLEMENTED,
+    )
 
     console.print(f"[bold green]Codex completed.[/bold green] Report: {report_path}")
 

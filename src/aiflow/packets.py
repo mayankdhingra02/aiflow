@@ -8,7 +8,13 @@ from pydantic import ValidationError
 
 from aiflow.constants import PACKET_BODY_SEPARATOR, PACKET_END, PACKET_START
 from aiflow.errors import PacketError
-from aiflow.models import PacketEnvelope, ParsedPacket, TaskRecord
+from aiflow.models import (
+    PacketEnvelope,
+    PacketStage,
+    ParsedPacket,
+    TaskRecord,
+    TaskStatus,
+)
 
 
 def _extract_packet_region(text: str) -> str:
@@ -63,6 +69,14 @@ def validate_packet_for_task(packet: ParsedPacket, task: TaskRecord) -> None:
     envelope = packet.envelope
     failures: list[str] = []
 
+    if (
+        envelope.stage == PacketStage.IMPLEMENTATION_PLAN
+        and task.status != TaskStatus.WAITING_FOR_PLAN
+    ):
+        failures.append(
+            f"task is not waiting for an implementation plan: current status is {task.status.value}"
+        )
+
     if envelope.task_id != task.id:
         failures.append(f"task_id mismatch: expected {task.id}, got {envelope.task_id}")
     if envelope.project_id != task.project_id:
@@ -72,9 +86,7 @@ def validate_packet_for_task(packet: ParsedPacket, task: TaskRecord) -> None:
     if envelope.nonce != task.nonce:
         failures.append("nonce mismatch")
     if envelope.base_sha.lower() != task.base_sha.lower():
-        failures.append(
-            f"base_sha mismatch: expected {task.base_sha}, got {envelope.base_sha}"
-        )
+        failures.append(f"base_sha mismatch: expected {task.base_sha}, got {envelope.base_sha}")
 
     if failures:
         raise PacketError("; ".join(failures))

@@ -12,6 +12,7 @@ def build_codex_command(spec: CodexRunSpec) -> list[str]:
     return [
         "codex",
         "exec",
+        "--ignore-user-config",
         "-C",
         str(spec.repository_path),
         "-m",

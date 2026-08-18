@@ -112,6 +112,7 @@ class Database:
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name = excluded.name,
+                        path = excluded.path,
                         remote_url = excluded.remote_url,
                         updated_at = excluded.updated_at
                     """,
@@ -143,9 +144,7 @@ class Database:
 
     def list_projects(self) -> list[ProjectRecord]:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM projects ORDER BY updated_at DESC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
         return [ProjectRecord(**dict(row)) for row in rows]
 
     def create_task(
@@ -230,6 +229,26 @@ class Database:
                     reasoning_effort,
                     risk_level,
                     int(requires_human_approval),
+                    utc_now(),
+                    task_id,
+                ),
+            )
+
+    def update_task_status(
+        self,
+        *,
+        task_id: str,
+        status: TaskStatus,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status.value,
                     utc_now(),
                     task_id,
                 ),

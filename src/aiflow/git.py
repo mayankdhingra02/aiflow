@@ -110,6 +110,31 @@ def inspect_repository(path: Path) -> GitProjectFacts:
     )
 
 
+def validate_repository_state(
+    path: Path,
+    *,
+    expected_sha: str,
+    expected_branch: str,
+    require_clean: bool = True,
+) -> GitProjectFacts:
+    facts = inspect_repository(path)
+    failures: list[str] = []
+
+    if facts.head_sha.lower() != expected_sha.lower():
+        failures.append(f"HEAD mismatch: expected {expected_sha}, got {facts.head_sha}")
+
+    if facts.branch != expected_branch:
+        failures.append(f"branch mismatch: expected {expected_branch}, got {facts.branch}")
+
+    if require_clean and facts.dirty:
+        failures.append("working tree contains uncommitted changes")
+
+    if failures:
+        raise GitError("repository state changed: " + "; ".join(failures))
+
+    return facts
+
+
 def _read_text(path: Path, *, limit: int) -> str:
     try:
         text = path.read_text(encoding="utf-8")
@@ -176,7 +201,5 @@ def repository_context(root: Path) -> str:
         f"{_package_summary(root)}\n\n"
         "## README excerpt\n"
         f"{readme}\n\n"
-        "## Tracked file inventory\n"
-        + "\n".join(f"- {path}" for path in files)
-        + suffix
+        "## Tracked file inventory\n" + "\n".join(f"- {path}" for path in files) + suffix
     )
