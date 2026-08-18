@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import json
+from textwrap import dedent
+
+from aiflow.models import ProjectRecord, TaskRecord
+
+
+def build_planner_prompt(
+    *,
+    project: ProjectRecord,
+    task: TaskRecord,
+    repository_context: str,
+) -> str:
+    envelope_template = {
+        "packet_version": 1,
+        "packet_id": "generate-a-new-unique-id",
+        "project_id": project.id,
+        "task_id": task.id,
+        "nonce": task.nonce,
+        "stage": "implementation_plan",
+        "base_sha": task.base_sha,
+        "execution": {
+            "model_role": "terra",
+            "reasoning_effort": "medium",
+        },
+        "risk": {
+            "level": "medium",
+            "touches_authentication": False,
+            "touches_authorization": False,
+            "touches_database": False,
+            "destructive_change": False,
+            "touches_secrets": False,
+            "touches_production_infrastructure": False,
+        },
+        "requires_human_approval_before_execution": False,
+    }
+
+    return dedent(
+        f"""
+        You are the planning architect for an Aiflow software task. Do not implement code.
+
+        Your job is to inspect the repository, understand the request, produce a complete
+        file-by-file implementation packet for a separate Codex implementation agent, and
+        recommend the least expensive model and reasoning effort that can reliably implement it.
+
+        ## Trusted task identity
+
+        - Project ID: {project.id}
+        - Project name: {project.name}
+        - Repository path on the user's Mac: not available to you and must not be invented
+        - Git remote: {project.remote_url or "No origin remote configured"}
+        - Base branch: {task.branch}
+        - Base commit: {task.base_sha}
+        - Task ID: {task.id}
+        - Nonce: {task.nonce}
+
+        Preserve Project ID, Task ID, nonce, and base commit exactly in your output.
+
+        ## User request
+
+        {task.request}
+
+        ## Planning requirements
+
+        1. Inspect the connected GitHub repository at the exact base commit when available.
+        2. Verify all files, symbols, routes, schemas, and commands before referencing them.
+        3. Prefer existing project conventions and reusable components.
+        4. Define the smallest coherent implementation that satisfies the request.
+        5. Include files to inspect, files to add, files to modify, behavior changes,
+           data or migration implications, tests, validation commands, risks, acceptance
+           criteria, and stop conditions.
+        6. State uncertainty rather than inventing repository facts.
+        7. Do not include arbitrary shell commands for Aiflow itself to execute. Validation
+           commands may be listed in the Markdown body, but Aiflow will independently decide
+           what is allowed to run.
+
+        ## Model routing
+
+        Choose exactly one implementation role and one reasoning effort:
+
+        - luna: bounded mechanical work with explicit acceptance criteria.
+        - terra: normal production implementation, multi-file features, and ordinary debugging.
+        - sol: only unusually ambiguous, security-critical, or exceptionally difficult work.
+        - reasoning_effort: low, medium, high, or xhigh.
+
+        Use the lowest reliable option. Do not choose Max or Ultra. Prefer Terra over Sol when
+        the implementation is large but well specified. Set human approval to true for Sol,
+        xhigh, authentication, authorization, destructive changes, secrets, or production
+        infrastructure.
+
+        ## Required output format
+
+        Return a packet containing a JSON envelope followed by a Markdown implementation plan.
+        You may add a brief explanation before the packet, but the packet itself must exactly use
+        these markers and contain valid JSON:
+
+        AIFLOW_PACKET_V1
+        ```json
+        {json.dumps(envelope_template, indent=2)}
+        ```
+        ---AIFLOW_BODY---
+        # Implementation Plan
+
+        [Complete implementation packet here]
+        AIFLOW_PACKET_END
+
+        Use a genuinely unique packet_id. Do not change the trusted identity fields.
+
+        ## Locally collected repository context
+
+        This context was assembled mechanically and can be incomplete. Verify it against GitHub
+        whenever possible.
+
+        {repository_context}
+        """
+    ).strip()
+
+
+def build_implementation_prompt(
+    *,
+    project: ProjectRecord,
+    task: TaskRecord,
+    plan_body: str,
+) -> str:
+    return dedent(
+        f"""
+        Implement the approved Aiflow plan against the current repository.
+
+        ## Trusted execution context
+
+        - Project: {project.name}
+        - Project ID: {project.id}
+        - Task ID: {task.id}
+        - Approved base commit: {task.base_sha}
+        - Current branch when the task started: {task.branch}
+
+        Before editing, verify that the repository still matches the approved base context. Do
+        not blindly follow stale line numbers. Use the smallest coherent change that satisfies
+        the plan, preserve established architecture, and do not broaden scope.
+
+        Do not push, merge, rewrite public history, expose secrets, weaken tests, or use
+        danger-full-access. Stop and report instead of guessing when the plan conflicts with the
+        repository, requires a destructive operation, or needs credentials or production access.
+
+        Run directly relevant validation. Never claim a command passed unless it actually ran.
+
+        Finish with:
+        1. changed files,
+        2. behavior implemented,
+        3. tests and validation commands run,
+        4. unresolved risks,
+        5. current Git status.
+
+        ## Approved implementation plan
+
+        {plan_body}
+        """
+    ).strip()
