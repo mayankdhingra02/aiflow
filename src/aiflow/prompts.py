@@ -210,7 +210,7 @@ def build_review_prompt(
     envelope_template[("requires_human_approval_before_execution")] = False
 
     review_sequence_identity = (
-        (f"- Review sequence: {review_sequence}\n") if review_sequence is not None else ""
+        f"- Review sequence: {review_sequence}" if review_sequence is not None else ""
     )
 
     preserve_sequence = ("review sequence, ") if review_sequence is not None else ""
@@ -221,7 +221,7 @@ def build_review_prompt(
             "the exact immutable Aiflow review "
             "preparation. Preserve it exactly. "
             "Never invent, alter, omit, or "
-            "recompute it.\n\n"
+            "recompute it."
         )
         if review_sequence is not None
         else ""
@@ -241,14 +241,16 @@ def build_review_prompt(
         - Git remote: {project.remote_url or "No origin remote configured"}
         - Base branch: {task.branch}
         - Base commit: {task.base_sha}
-        {review_sequence_identity}- Reviewed worktree fingerprint: {review_fingerprint}
+        {review_sequence_identity}
+        - Reviewed worktree fingerprint: {review_fingerprint}
         - Task ID: {task.id}
         - Nonce: {task.nonce}
 
         Preserve Project ID, Task ID, nonce, base commit, {preserve_sequence}and review fingerprint
         exactly in your output.
 
-        {sequence_rule}The review_fingerprint identifies the exact local working tree whose evidence
+        {sequence_rule}
+        The review_fingerprint identifies the exact local working tree whose evidence
         you are reviewing. Preserve it exactly. Never invent, alter, omit, or recompute it.
 
         ## Review rules

@@ -417,4 +417,14 @@ def test_review_preparation_uses_immutable_destination_and_sequence(
 
     assert artifacts.review_fingerprint in prompt
 
+    assert "\n        ## Trusted task identity\n" in prompt
+
+    assert "\n        - Review sequence: 1\n" in prompt
+
+    assert "\n        - Reviewed worktree fingerprint:" in prompt
+
+    assert "\n        ## Review rules\n" in prompt
+
+    assert "\n        AIFLOW_PACKET_V1\n" in prompt
+
     assert (task_dir / "review-prompt.md").exists() is False
