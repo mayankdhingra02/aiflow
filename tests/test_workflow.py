@@ -5,6 +5,8 @@ import pytest
 from aiflow.db import Database
 from aiflow.models import (
     ProjectRecord,
+    RunHistoryStatus,
+    RunKind,
     TaskStatus,
 )
 from aiflow.validation import (
@@ -331,3 +333,164 @@ def test_failed_task_can_validate_to_validation_failed(
     assert task is not None
 
     assert task.status == TaskStatus.VALIDATION_FAILED
+
+
+def test_validation_uses_latest_run_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, task_id = _setup_task(tmp_path)
+
+    run_dir = tmp_path / "task" / "runs" / "001"
+
+    run_dir.mkdir(
+        parents=True,
+    )
+
+    run = db.create_run_history(
+        task_id=task_id,
+        sequence=1,
+        kind=RunKind.INITIAL,
+        artifact_dir=run_dir,
+        model_role="terra",
+        reasoning_effort="medium",
+    )
+
+    summary = _successful_summary(tmp_path)
+
+    captured: dict[
+        str,
+        Path,
+    ] = {}
+
+    def fake_validation(
+        *,
+        root: Path,
+        task_dir: Path,
+        timeout_seconds: int,
+    ) -> ValidationSummary:
+        del root
+        del timeout_seconds
+
+        captured["task_dir"] = task_dir
+
+        return summary
+
+    monkeypatch.setattr(
+        ("aiflow.workflow.run_project_validations"),
+        fake_validation,
+    )
+
+    result = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    assert result.passed is True
+
+    assert captured["task_dir"] == run_dir / "validations" / "001"
+
+    updated_run = db.get_run_history(run.id)
+
+    assert updated_run is not None
+
+    assert updated_run.status == RunHistoryStatus.REVIEW_READY
+
+
+def test_revalidation_creates_new_attempt_without_overwriting_first(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, task_id = _setup_task(tmp_path)
+
+    run_dir = tmp_path / "task" / "runs" / "001"
+
+    run_dir.mkdir(
+        parents=True,
+    )
+
+    db.create_run_history(
+        task_id=task_id,
+        sequence=1,
+        kind=RunKind.INITIAL,
+        artifact_dir=run_dir,
+        model_role="terra",
+        reasoning_effort="medium",
+    )
+
+    called_dirs: list[Path] = []
+
+    def fake_validation(
+        *,
+        root: Path,
+        task_dir: Path,
+        timeout_seconds: int,
+    ) -> ValidationSummary:
+        del root
+        del timeout_seconds
+
+        called_dirs.append(task_dir)
+
+        output_path = task_dir / "validation.log"
+
+        output_path.write_text(
+            "passed\n",
+            encoding="utf-8",
+        )
+
+        summary_path = task_dir / "validation-summary.json"
+
+        summary_path.write_text(
+            (f"attempt {len(called_dirs)}\n"),
+            encoding="utf-8",
+        )
+
+        return ValidationSummary(
+            commands=(
+                ValidationCommand(
+                    name="test",
+                    argv=("test-command",),
+                ),
+            ),
+            results=(
+                ValidationResult(
+                    name="test",
+                    argv=("test-command",),
+                    exit_code=0,
+                    duration_seconds=0.1,
+                    output_path=(output_path),
+                ),
+            ),
+            summary_path=(summary_path),
+        )
+
+    monkeypatch.setattr(
+        ("aiflow.workflow.run_project_validations"),
+        fake_validation,
+    )
+
+    first = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    first_text = first.summary_path.read_text(encoding="utf-8")
+
+    second = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    assert called_dirs == [
+        (run_dir / "validations" / "001"),
+        (run_dir / "validations" / "002"),
+    ]
+
+    assert first.summary_path != second.summary_path
+
+    assert first.summary_path.read_text(encoding="utf-8") == first_text
+
+    assert second.summary_path.read_text(encoding="utf-8") == "attempt 2\n"

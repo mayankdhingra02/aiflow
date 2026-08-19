@@ -329,3 +329,102 @@ def test_codex_report_with_credential_is_omitted_from_review_prompt(
     assert fake_github_token not in prompt
 
     assert "Codex implementation report because credential-like material was detected" in prompt
+
+
+def test_prepare_review_preserves_existing_codex_summary(
+    tmp_path: Path,
+) -> None:
+    root = _setup_repository(tmp_path)
+
+    (root / "app.py").write_text(
+        "value = 2\n",
+        encoding="utf-8",
+    )
+
+    task_dir = tmp_path / "task"
+
+    _write_review_artifacts(
+        task_dir=task_dir,
+        implementation_report=("Updated app.py.\n"),
+    )
+
+    existing_summary = task_dir / "codex-events-summary.json"
+
+    sentinel = '{"immutable": true}\n'
+
+    existing_summary.write_text(
+        sentinel,
+        encoding="utf-8",
+    )
+
+    project, task = _build_records(
+        root=root,
+        task_dir=task_dir,
+    )
+
+    prepare_review_artifacts(
+        project=project,
+        task=task,
+    )
+
+    assert existing_summary.read_text(encoding="utf-8") == sentinel
+
+
+def test_review_preparation_uses_immutable_destination_and_sequence(
+    tmp_path: Path,
+) -> None:
+    root = _setup_repository(tmp_path)
+
+    (root / "app.py").write_text(
+        "value = 2\n",
+        encoding="utf-8",
+    )
+
+    task_dir = tmp_path / "task"
+
+    _write_review_artifacts(
+        task_dir=task_dir,
+        implementation_report=("Updated app.py.\n"),
+    )
+
+    project, task = _build_records(
+        root=root,
+        task_dir=task_dir,
+    )
+
+    review_dir = task_dir / "reviews" / "001"
+
+    review_dir.mkdir(
+        parents=True,
+    )
+
+    artifacts = prepare_review_artifacts(
+        project=project,
+        task=task,
+        review_artifact_dir=(review_dir),
+        review_sequence=1,
+    )
+
+    assert artifacts.prompt_path == review_dir / "review-prompt.md"
+
+    assert artifacts.evidence_path == review_dir / "review-evidence.md"
+
+    assert artifacts.fingerprint_path == review_dir / "review-fingerprint.txt"
+
+    prompt = artifacts.prompt_path.read_text(encoding="utf-8")
+
+    assert '"review_sequence": 1' in prompt
+
+    assert artifacts.review_fingerprint in prompt
+
+    assert "\n        ## Trusted task identity\n" in prompt
+
+    assert "\n        - Review sequence: 1\n" in prompt
+
+    assert "\n        - Reviewed worktree fingerprint:" in prompt
+
+    assert "\n        ## Review rules\n" in prompt
+
+    assert "\n        AIFLOW_PACKET_V1\n" in prompt
+
+    assert (task_dir / "review-prompt.md").exists() is False

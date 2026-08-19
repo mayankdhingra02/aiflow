@@ -55,7 +55,10 @@ def parse_packet(
     if PACKET_BODY_SEPARATOR not in without_start:
         raise PacketError(f"missing packet separator: {PACKET_BODY_SEPARATOR}")
 
-    envelope_text, body_and_end = without_start.split(
+    (
+        envelope_text,
+        body_and_end,
+    ) = without_start.split(
         PACKET_BODY_SEPARATOR,
         1,
     )
@@ -67,10 +70,6 @@ def parse_packet(
 
     envelope_text = envelope_text.strip()
 
-    # ChatGPT may wrap the JSON envelope
-    # in a fenced code block. Strip only the
-    # fence markers and otherwise preserve
-    # the packet content.
     envelope_text = re.sub(
         r"^```(?:json)?\s*",
         "",
@@ -86,11 +85,13 @@ def parse_packet(
 
     try:
         payload = json.loads(envelope_text)
+
     except json.JSONDecodeError as exc:
         raise PacketError(f"packet envelope is not valid JSON: {exc.msg}") from exc
 
     try:
         envelope = PacketEnvelope.model_validate(payload)
+
     except ValidationError as exc:
         raise PacketError(f"packet envelope failed validation: {exc}") from exc
 
@@ -128,10 +129,14 @@ def validate_packet_for_task(
         TaskStatus.WAITING_FOR_REVIEW,
     }:
         failures.append(
-            "task is not waiting for an "
-            "implementation review: current "
-            f"status is {task.status.value}"
+            "task is not waiting for "
+            "an implementation review: "
+            "current status is "
+            f"{task.status.value}"
         )
+
+    if envelope.stage == PacketStage.IMPLEMENTATION_PLAN and envelope.review_sequence is not None:
+        failures.append("implementation plan must not contain review_sequence")
 
     if (
         envelope.stage == PacketStage.IMPLEMENTATION_PLAN
@@ -141,6 +146,12 @@ def validate_packet_for_task(
 
     if envelope.stage == PacketStage.IMPLEMENTATION_REVIEW and envelope.review_fingerprint is None:
         failures.append("implementation review must contain review_fingerprint")
+
+    # review_sequence remains optional here
+    # for backwards compatibility with
+    # pre-Phase-3 review packets. C2 binds
+    # history-aware packets to reviews/NNN
+    # during review import.
 
     if envelope.task_id != task.id:
         failures.append(f"task_id mismatch: expected {task.id}, got {envelope.task_id}")

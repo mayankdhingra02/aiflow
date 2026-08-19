@@ -39,6 +39,8 @@ from aiflow.models import (
     CodexRunSpec,
     PacketStage,
     ProjectRecord,
+    RunHistoryStatus,
+    RunKind,
     TaskStatus,
 )
 from aiflow.packets import (
@@ -56,12 +58,20 @@ from aiflow.prompts import (
 from aiflow.review import (
     prepare_review_artifacts,
 )
+from aiflow.review_history import (
+    allocate_review_directory,
+    record_prepared_review,
+)
 from aiflow.review_loop import (
     ReviewVerdict,
     followup_prompt_path,
     import_review_packet,
     is_followup_execution,
     validate_followup_worktree,
+)
+from aiflow.run_history import (
+    allocate_run,
+    preview_next_run_artifacts,
 )
 from aiflow.workflow import (
     validate_implemented_task,
@@ -200,7 +210,7 @@ def register(
         str | None,
         typer.Option(
             "--name",
-            help="Override the display name.",
+            help=("Override the display name."),
         ),
     ] = None,
 ) -> None:
@@ -209,6 +219,7 @@ def register(
 
     try:
         facts = inspect_repository(path)
+
         db = _db()
 
         project = db.upsert_project(
@@ -217,6 +228,7 @@ def register(
             path=facts.root,
             remote_url=facts.remote_url,
         )
+
     except AiflowError as exc:
         _fail(str(exc))
 
@@ -270,7 +282,9 @@ def list_projects() -> None:
 def start(
     request: Annotated[
         str,
-        typer.Argument(help=("Describe the software change to plan.")),
+        typer.Argument(
+            help=("Describe the software change to plan."),
+        ),
     ],
     path: Annotated[
         Path | None,
@@ -302,9 +316,11 @@ def start(
 
         if facts.dirty:
             raise StateError(
-                "the repository has uncommitted "
-                "changes; commit or stash them "
-                "before starting an Aiflow task"
+                "the repository has "
+                "uncommitted changes; "
+                "commit or stash them "
+                "before starting an "
+                "Aiflow task"
             )
 
         normalized_request = request.strip()
@@ -369,7 +385,7 @@ def start(
         "3. Run: "
         "aiflow import-packet --clipboard"
         if copy
-        else f"Open and copy: {prompt_path}"
+        else (f"Open and copy: {prompt_path}")
     )
 
     console.print(
@@ -463,9 +479,9 @@ def import_packet(
 
         if packet.envelope.stage != PacketStage.IMPLEMENTATION_PLAN:
             raise PacketError(
-                "this command currently accepts "
-                "implementation_plan packets, "
-                "got "
+                "this command currently "
+                "accepts implementation_plan "
+                "packets, got "
                 f"{packet.envelope.stage}"
             )
 
@@ -573,12 +589,12 @@ def import_packet(
                 "Implementation prompt: "
                 f"{implementation_prompt_path}"
                 f"{warning}\n\n"
-                "Preview the eventual command "
-                "with:\n"
+                "Preview the eventual "
+                "command with:\n"
                 f"aiflow run {task.id} "
                 "--dry-run"
             ),
-            title="Ready for implementation",
+            title=("Ready for implementation"),
         )
     )
 
@@ -646,10 +662,11 @@ def import_review(
             Panel.fit(
                 (
                     "[bold green]"
-                    "Sol review imported: SHIP."
+                    "Sol review imported: "
+                    "SHIP."
                     "[/bold green]\n"
                     f"Task: {task.id}\n"
-                    f"Review: "
+                    "Review: "
                     f"{result.review_path}\n"
                     "Status: completed\n\n"
                     "The implementation review "
@@ -667,8 +684,9 @@ def import_review(
 
     warning = (
         "\n[bold yellow]"
-        "Explicit human approval is required "
-        "before the follow-up Codex execution."
+        "Explicit human approval is "
+        "required before the follow-up "
+        "Codex execution."
         "[/bold yellow]"
         if result.requires_human_approval
         else ""
@@ -681,7 +699,7 @@ def import_review(
                 "Sol requested changes."
                 "[/bold yellow]\n"
                 f"Task: {task.id}\n"
-                f"Review: "
+                "Review: "
                 f"{result.review_path}\n"
                 "Follow-up prompt: "
                 f"{result.followup_prompt_path}\n"
@@ -692,8 +710,8 @@ def import_review(
                 "Risk: "
                 f"{packet.envelope.risk.level}"
                 f"{warning}\n\n"
-                "The reviewed worktree is now "
-                "fingerprint-locked.\n"
+                "The reviewed worktree is "
+                "now fingerprint-locked.\n"
                 "Preview the follow-up with:\n"
                 f"aiflow run {task.id} "
                 "--dry-run"
@@ -707,7 +725,9 @@ def import_review(
 def run(
     task_id: Annotated[
         str,
-        typer.Argument(help=("Task ID to preview or execute.")),
+        typer.Argument(
+            help=("Task ID to preview or execute."),
+        ),
     ],
     dry_run: Annotated[
         bool,
@@ -763,25 +783,25 @@ def run(
                 task=task,
             )
 
-            prompt_path = followup_prompt_path(task)
+            source_prompt_path = followup_prompt_path(task)
+
+            run_kind = RunKind.FOLLOWUP
 
         else:
             validate_repository_state(
                 project.path,
-                expected_sha=task.base_sha,
-                expected_branch=task.branch,
+                expected_sha=(task.base_sha),
+                expected_branch=(task.branch),
             )
 
-            prompt_path = task.task_dir / "implementation-prompt.md"
+            source_prompt_path = task.task_dir / "implementation-prompt.md"
 
-        if not prompt_path.exists():
-            raise StateError(f"implementation prompt does not exist: {prompt_path}")
+            run_kind = RunKind.INITIAL
+
+        if not source_prompt_path.exists():
+            raise StateError(f"implementation prompt does not exist: {source_prompt_path}")
 
         model_id = MODEL_BY_ROLE[task.recommended_model]
-
-        report_path = task.task_dir / "implementation-report.md"
-
-        events_path = task.task_dir / "codex-events.jsonl"
 
         if task.requires_human_approval and not approve_high_risk and not dry_run:
             raise StateError(
@@ -792,15 +812,20 @@ def run(
                 "--approve-high-risk"
             )
 
-        spec = CodexRunSpec(
-            repository_path=project.path,
-            model_id=model_id,
-            reasoning_effort=(task.reasoning_effort),
-            prompt_path=prompt_path,
-            report_path=report_path,
+        preview_artifacts = preview_next_run_artifacts(
+            db=db,
+            task=task,
         )
 
-        command = build_codex_command(spec)
+        preview_spec = CodexRunSpec(
+            repository_path=(project.path),
+            model_id=model_id,
+            reasoning_effort=(task.reasoning_effort),
+            prompt_path=(preview_artifacts.prompt_path),
+            report_path=(preview_artifacts.report_path),
+        )
+
+        command = build_codex_command(preview_spec)
 
     except AiflowError as exc:
         _fail(str(exc))
@@ -812,7 +837,8 @@ def run(
             (
                 f"Pass: {execution_kind}\n"
                 f"Project: {project.name}\n"
-                f"Repository: {project.path}\n"
+                "Repository: "
+                f"{project.path}\n"
                 f"Model: {model_id}\n"
                 "Reasoning: "
                 f"{task.reasoning_effort}\n"
@@ -820,28 +846,68 @@ def run(
                 f"{task.risk_level or 'unknown'}\n"
                 "Explicit approval required: "
                 f"{task.requires_human_approval}\n"
-                "Prompt: "
-                f"{prompt_path}\n"
+                "Run sequence: "
+                f"{preview_artifacts.artifact_dir.name}\n"
+                "Run artifacts: "
+                f"{preview_artifacts.artifact_dir}\n"
+                "Prompt snapshot: "
+                f"{preview_artifacts.prompt_path}\n"
                 "Codex events: "
-                f"{events_path}\n\n"
+                f"{preview_artifacts.events_path}\n\n"
                 "[bold]Command[/bold]\n"
                 f"{display_command(command)}"
             ),
-            title="Codex execution preview",
+            title=("Codex execution preview"),
         )
     )
 
     if dry_run:
-        console.print("[yellow]Dry run only. No Codex usage was consumed.[/yellow]")
+        console.print(
+            "[yellow]"
+            "Dry run only. No run history "
+            "was allocated and no Codex "
+            "usage was consumed."
+            "[/yellow]"
+        )
         return
 
     if not yes and not typer.confirm("Run this Codex implementation now?"):
         console.print("Cancelled.")
         return
 
+    try:
+        allocated = allocate_run(
+            db=db,
+            task=task,
+            kind=run_kind,
+            source_prompt_path=(source_prompt_path),
+            model_role=(task.recommended_model),
+            reasoning_effort=(task.reasoning_effort),
+        )
+
+    except AiflowError as exc:
+        _fail(str(exc))
+
+    spec = CodexRunSpec(
+        repository_path=(project.path),
+        model_id=model_id,
+        reasoning_effort=(task.reasoning_effort),
+        prompt_path=(allocated.artifacts.prompt_path),
+        report_path=(allocated.artifacts.report_path),
+    )
+
+    events_path = allocated.artifacts.events_path
+
+    report_path = allocated.artifacts.report_path
+
     db.update_task_status(
         task_id=task.id,
         status=TaskStatus.RUNNING,
+    )
+
+    db.update_run_history_status(
+        history_id=allocated.record.id,
+        status=RunHistoryStatus.RUNNING,
     )
 
     try:
@@ -851,6 +917,11 @@ def run(
         )
 
     except KeyboardInterrupt:
+        db.update_run_history_status(
+            history_id=allocated.record.id,
+            status=RunHistoryStatus.FAILED,
+        )
+
         db.update_task_status(
             task_id=task.id,
             status=TaskStatus.FAILED,
@@ -865,6 +936,11 @@ def run(
         )
 
     except AiflowError as exc:
+        db.update_run_history_status(
+            history_id=allocated.record.id,
+            status=RunHistoryStatus.FAILED,
+        )
+
         db.update_task_status(
             task_id=task.id,
             status=TaskStatus.FAILED,
@@ -878,6 +954,11 @@ def run(
         )
 
     if exit_code != 0:
+        db.update_run_history_status(
+            history_id=allocated.record.id,
+            status=RunHistoryStatus.FAILED,
+        )
+
         db.update_task_status(
             task_id=task.id,
             status=TaskStatus.FAILED,
@@ -900,6 +981,8 @@ def run(
         db=db,
         project=project,
         task_id=task.id,
+        artifact_dir=(allocated.artifacts.artifact_dir),
+        run_history_id=(allocated.record.id),
     )
 
     if not validation_summary.passed:
@@ -913,6 +996,8 @@ def run(
                     "completed, but validation "
                     "did not pass."
                     "[/bold yellow]\n"
+                    "Run: "
+                    f"{allocated.record.sequence}\n"
                     "Summary: "
                     f"{validation_summary.summary_path}\n"
                     "Codex events: "
@@ -937,8 +1022,14 @@ def run(
                 f"{execution_kind} and "
                 "validation completed."
                 "[/bold green]\n"
-                f"Codex report: {report_path}\n"
-                f"Codex events: {events_path}\n"
+                "Run: "
+                f"{allocated.record.sequence}\n"
+                "Run artifacts: "
+                f"{allocated.artifacts.artifact_dir}\n"
+                "Codex report: "
+                f"{report_path}\n"
+                "Codex events: "
+                f"{events_path}\n"
                 "Validation summary: "
                 f"{validation_summary.summary_path}\n"
                 "Validation commands: "
@@ -980,11 +1071,13 @@ def validate(
             project=project,
             task_id=task.id,
         )
+
     except KeyboardInterrupt:
         _fail(
             "validation interrupted by user",
             code=130,
         )
+
     except (
         AiflowError,
         OSError,
@@ -1049,7 +1142,7 @@ def prepare_review(
         ),
     ] = True,
 ) -> None:
-    """Revalidate current worktree and generate the Sol review bundle."""
+    """Revalidate and create an immutable Sol review preparation."""
     try:
         db = _db()
 
@@ -1091,7 +1184,7 @@ def prepare_review(
                         "[bold yellow]"
                         "Current worktree did not "
                         "pass validation. No review "
-                        "prompt was generated."
+                        "preparation was created."
                         "[/bold yellow]\n"
                         "Summary: "
                         f"{validation_summary.summary_path}\n"
@@ -1107,9 +1200,31 @@ def prepare_review(
 
             raise typer.Exit(1)
 
+        latest_run = db.latest_run_history(task.id)
+
+        implementation_artifact_dir = (
+            latest_run.artifact_dir if latest_run is not None else task.task_dir
+        )
+
+        review_paths = allocate_review_directory(
+            db=db,
+            task=task,
+        )
+
         artifacts = prepare_review_artifacts(
             project=project,
             task=task,
+            implementation_artifact_dir=(implementation_artifact_dir),
+            review_artifact_dir=(review_paths.artifact_dir),
+            review_sequence=(review_paths.sequence),
+        )
+
+        prepared = record_prepared_review(
+            db=db,
+            task=task,
+            artifacts=review_paths,
+            run_id=(latest_run.id if latest_run is not None else None),
+            fingerprint=(artifacts.review_fingerprint),
         )
 
         if copy:
@@ -1137,8 +1252,10 @@ def prepare_review(
     next_step = (
         "The freshly validated review "
         "prompt is on your clipboard.\n"
-        "Paste it into ChatGPT Web using Sol.\n"
-        "Then copy Sol's AIFLOW packet and run:\n"
+        "Paste it into ChatGPT Web using "
+        "Sol.\n"
+        "Then copy Sol's AIFLOW packet "
+        "and run:\n"
         "aiflow import-review --clipboard"
         if copy
         else (
@@ -1153,11 +1270,18 @@ def prepare_review(
         Panel.fit(
             (
                 "[bold green]"
-                "Review bundle prepared."
+                "Immutable review preparation "
+                "created."
                 "[/bold green]\n"
                 f"Task: {task.id}\n"
+                "Review sequence: "
+                f"{prepared.record.sequence}\n"
+                "Review artifacts: "
+                f"{prepared.artifacts.artifact_dir}\n"
                 "Fresh validation: "
                 f"{validation_summary.summary_path}\n"
+                "Fingerprint: "
+                f"{artifacts.fingerprint_path}\n"
                 "Evidence: "
                 f"{artifacts.evidence_path}\n"
                 "Codex event summary: "
@@ -1166,7 +1290,7 @@ def prepare_review(
                 f"{artifacts.prompt_path}\n\n"
                 f"{next_step}"
             ),
-            title="Waiting for Sol review",
+            title=("Waiting for Sol review"),
         )
     )
 
@@ -1175,7 +1299,9 @@ def prepare_review(
 def show(
     task_id: Annotated[
         str,
-        typer.Argument(help="Task ID to display."),
+        typer.Argument(
+            help="Task ID to display.",
+        ),
     ],
 ) -> None:
     """Show one task and its artifact paths."""

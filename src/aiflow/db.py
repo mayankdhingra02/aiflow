@@ -6,7 +6,16 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aiflow.models import ProjectRecord, TaskRecord, TaskStatus
+from aiflow.models import (
+    ProjectRecord,
+    ReviewHistoryRecord,
+    ReviewHistoryStatus,
+    RunHistoryRecord,
+    RunHistoryStatus,
+    RunKind,
+    TaskRecord,
+    TaskStatus,
+)
 from aiflow.paths import database_path
 
 
@@ -15,16 +24,29 @@ def utc_now() -> str:
 
 
 class Database:
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+    ) -> None:
         self.path = path or database_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
         self.initialize()
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(
+        self,
+    ) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path)
+
         connection.row_factory = sqlite3.Row
+
         connection.execute("PRAGMA foreign_keys = ON")
+
         try:
             yield connection
             connection.commit()
@@ -49,7 +71,9 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    project_id TEXT NOT NULL
+                        REFERENCES projects(id)
+                        ON DELETE CASCADE,
                     title TEXT NOT NULL,
                     request TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -61,21 +85,74 @@ class Database:
                     recommended_model TEXT,
                     reasoning_effort TEXT,
                     risk_level TEXT,
-                    requires_human_approval INTEGER NOT NULL DEFAULT 0,
+                    requires_human_approval INTEGER
+                        NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS packets (
                     packet_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    task_id TEXT NOT NULL
+                        REFERENCES tasks(id)
+                        ON DELETE CASCADE,
                     stage TEXT NOT NULL,
                     sha256 TEXT NOT NULL,
                     received_at TEXT NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
-                CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+                CREATE TABLE IF NOT EXISTS run_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL
+                        REFERENCES tasks(id)
+                        ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    artifact_dir TEXT NOT NULL,
+                    model_role TEXT,
+                    reasoning_effort TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(task_id, sequence),
+                    UNIQUE(artifact_dir)
+                );
+
+                CREATE TABLE IF NOT EXISTS review_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL
+                        REFERENCES tasks(id)
+                        ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    artifact_dir TEXT NOT NULL,
+                    run_id INTEGER
+                        REFERENCES run_history(id)
+                        ON DELETE SET NULL,
+                    fingerprint TEXT,
+                    verdict TEXT,
+                    packet_id TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(task_id, sequence),
+                    UNIQUE(artifact_dir)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_tasks_project_id
+                    ON tasks(project_id);
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_tasks_status
+                    ON tasks(status);
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_run_history_task
+                    ON run_history(task_id, sequence);
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_review_history_task
+                    ON review_history(task_id, sequence);
                 """
             )
 
@@ -88,63 +165,108 @@ class Database:
         remote_url: str | None,
     ) -> ProjectRecord:
         now = utc_now()
+
         resolved_path = str(path.resolve())
+
         persisted_project_id = project_id
+
         with self.connect() as connection:
             existing_path = connection.execute(
-                "SELECT id FROM projects WHERE path = ?",
+                ("SELECT id FROM projects WHERE path = ?"),
                 (resolved_path,),
             ).fetchone()
+
             if existing_path is not None:
                 persisted_project_id = str(existing_path["id"])
+
                 connection.execute(
                     """
                     UPDATE projects
-                    SET name = ?, remote_url = ?, updated_at = ?
+                    SET name = ?,
+                        remote_url = ?,
+                        updated_at = ?
                     WHERE id = ?
                     """,
-                    (name, remote_url, now, persisted_project_id),
+                    (
+                        name,
+                        remote_url,
+                        now,
+                        persisted_project_id,
+                    ),
                 )
+
             else:
                 connection.execute(
                     """
-                    INSERT INTO projects (id, name, path, remote_url, created_at, updated_at)
+                    INSERT INTO projects (
+                        id,
+                        name,
+                        path,
+                        remote_url,
+                        created_at,
+                        updated_at
+                    )
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name = excluded.name,
                         path = excluded.path,
-                        remote_url = excluded.remote_url,
-                        updated_at = excluded.updated_at
+                        remote_url =
+                            excluded.remote_url,
+                        updated_at =
+                            excluded.updated_at
                     """,
-                    (project_id, name, resolved_path, remote_url, now, now),
+                    (
+                        project_id,
+                        name,
+                        resolved_path,
+                        remote_url,
+                        now,
+                        now,
+                    ),
                 )
+
         project = self.get_project(persisted_project_id)
+
         assert project is not None
+
         return project
 
-    def get_project(self, project_id: str) -> ProjectRecord | None:
+    def get_project(
+        self,
+        project_id: str,
+    ) -> ProjectRecord | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM projects WHERE id = ?",
+                ("SELECT * FROM projects WHERE id = ?"),
                 (project_id,),
             ).fetchone()
+
         if row is None:
             return None
+
         return ProjectRecord(**dict(row))
 
-    def get_project_by_path(self, path: Path) -> ProjectRecord | None:
+    def get_project_by_path(
+        self,
+        path: Path,
+    ) -> ProjectRecord | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM projects WHERE path = ?",
+                ("SELECT * FROM projects WHERE path = ?"),
                 (str(path.resolve()),),
             ).fetchone()
+
         if row is None:
             return None
+
         return ProjectRecord(**dict(row))
 
-    def list_projects(self) -> list[ProjectRecord]:
+    def list_projects(
+        self,
+    ) -> list[ProjectRecord]:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
+
         return [ProjectRecord(**dict(row)) for row in rows]
 
     def create_task(
@@ -160,20 +282,33 @@ class Database:
         task_dir: Path,
     ) -> TaskRecord:
         now = utc_now()
+
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO tasks (
-                    id, project_id, title, request, status, nonce, base_sha, branch,
-                    task_dir, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id,
+                    project_id,
+                    title,
+                    request,
+                    status,
+                    nonce,
+                    base_sha,
+                    branch,
+                    task_dir,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     task_id,
                     project_id,
                     title,
                     request,
-                    TaskStatus.WAITING_FOR_PLAN.value,
+                    (TaskStatus.WAITING_FOR_PLAN.value),
                     nonce,
                     base_sha,
                     branch,
@@ -182,26 +317,39 @@ class Database:
                     now,
                 ),
             )
+
         task = self.get_task(task_id)
+
         assert task is not None
+
         return task
 
-    def get_task(self, task_id: str) -> TaskRecord | None:
+    def get_task(
+        self,
+        task_id: str,
+    ) -> TaskRecord | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM tasks WHERE id = ?",
+                ("SELECT * FROM tasks WHERE id = ?"),
                 (task_id,),
             ).fetchone()
+
         if row is None:
             return None
+
         return TaskRecord(**dict(row))
 
-    def list_tasks(self, *, limit: int = 20) -> list[TaskRecord]:
+    def list_tasks(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[TaskRecord]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
+                ("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?"),
                 (limit,),
             ).fetchall()
+
         return [TaskRecord(**dict(row)) for row in rows]
 
     def update_task_plan(
@@ -218,12 +366,17 @@ class Database:
             connection.execute(
                 """
                 UPDATE tasks
-                SET status = ?, plan_path = ?, recommended_model = ?, reasoning_effort = ?,
-                    risk_level = ?, requires_human_approval = ?, updated_at = ?
+                SET status = ?,
+                    plan_path = ?,
+                    recommended_model = ?,
+                    reasoning_effort = ?,
+                    risk_level = ?,
+                    requires_human_approval = ?,
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
-                    TaskStatus.READY_TO_RUN.value,
+                    (TaskStatus.READY_TO_RUN.value),
                     str(plan_path),
                     recommended_model,
                     reasoning_effort,
@@ -256,7 +409,7 @@ class Database:
                 WHERE id = ?
                 """,
                 (
-                    TaskStatus.REVIEW_IMPORTED.value,
+                    (TaskStatus.REVIEW_IMPORTED.value),
                     recommended_model,
                     reasoning_effort,
                     risk_level,
@@ -276,7 +429,8 @@ class Database:
             connection.execute(
                 """
                 UPDATE tasks
-                SET status = ?, updated_at = ?
+                SET status = ?,
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -286,20 +440,349 @@ class Database:
                 ),
             )
 
-    def packet_exists(self, packet_id: str) -> bool:
+    def packet_exists(
+        self,
+        packet_id: str,
+    ) -> bool:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM packets WHERE packet_id = ?",
+                ("SELECT 1 FROM packets WHERE packet_id = ?"),
                 (packet_id,),
             ).fetchone()
+
         return row is not None
 
-    def record_packet(self, *, packet_id: str, task_id: str, stage: str, sha256: str) -> None:
+    def record_packet(
+        self,
+        *,
+        packet_id: str,
+        task_id: str,
+        stage: str,
+        sha256: str,
+    ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
-                INSERT INTO packets (packet_id, task_id, stage, sha256, received_at)
+                INSERT INTO packets (
+                    packet_id,
+                    task_id,
+                    stage,
+                    sha256,
+                    received_at
+                )
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (packet_id, task_id, stage, sha256, utc_now()),
+                (
+                    packet_id,
+                    task_id,
+                    stage,
+                    sha256,
+                    utc_now(),
+                ),
+            )
+
+    def next_run_sequence(
+        self,
+        task_id: str,
+    ) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(
+                    MAX(sequence),
+                    0
+                ) + 1 AS sequence
+                FROM run_history
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+
+        assert row is not None
+
+        return int(row["sequence"])
+
+    def create_run_history(
+        self,
+        *,
+        task_id: str,
+        sequence: int,
+        kind: RunKind,
+        artifact_dir: Path,
+        model_role: str | None,
+        reasoning_effort: str | None,
+    ) -> RunHistoryRecord:
+        now = utc_now()
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO run_history (
+                    task_id,
+                    sequence,
+                    kind,
+                    artifact_dir,
+                    model_role,
+                    reasoning_effort,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    sequence,
+                    kind.value,
+                    str(artifact_dir),
+                    model_role,
+                    reasoning_effort,
+                    (RunHistoryStatus.CREATED.value),
+                    now,
+                    now,
+                ),
+            )
+
+            history_id = cursor.lastrowid
+
+        assert history_id is not None
+
+        record = self.get_run_history(int(history_id))
+
+        assert record is not None
+
+        return record
+
+    def get_run_history(
+        self,
+        history_id: int,
+    ) -> RunHistoryRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM run_history
+                WHERE id = ?
+                """,
+                (history_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return RunHistoryRecord(**dict(row))
+
+    def list_run_history(
+        self,
+        task_id: str,
+    ) -> list[RunHistoryRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM run_history
+                WHERE task_id = ?
+                ORDER BY sequence ASC
+                """,
+                (task_id,),
+            ).fetchall()
+
+        return [RunHistoryRecord(**dict(row)) for row in rows]
+
+    def latest_run_history(
+        self,
+        task_id: str,
+    ) -> RunHistoryRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM run_history
+                WHERE task_id = ?
+                ORDER BY sequence DESC
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return RunHistoryRecord(**dict(row))
+
+    def update_run_history_status(
+        self,
+        *,
+        history_id: int,
+        status: RunHistoryStatus,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE run_history
+                SET status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status.value,
+                    utc_now(),
+                    history_id,
+                ),
+            )
+
+    def next_review_sequence(
+        self,
+        task_id: str,
+    ) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(
+                    MAX(sequence),
+                    0
+                ) + 1 AS sequence
+                FROM review_history
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+
+        assert row is not None
+
+        return int(row["sequence"])
+
+    def create_review_history(
+        self,
+        *,
+        task_id: str,
+        sequence: int,
+        artifact_dir: Path,
+        run_id: int | None,
+        fingerprint: str | None,
+    ) -> ReviewHistoryRecord:
+        now = utc_now()
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO review_history (
+                    task_id,
+                    sequence,
+                    artifact_dir,
+                    run_id,
+                    fingerprint,
+                    verdict,
+                    packet_id,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?
+                )
+                """,
+                (
+                    task_id,
+                    sequence,
+                    str(artifact_dir),
+                    run_id,
+                    fingerprint,
+                    (ReviewHistoryStatus.PREPARED.value),
+                    now,
+                    now,
+                ),
+            )
+
+            history_id = cursor.lastrowid
+
+        assert history_id is not None
+
+        record = self.get_review_history(int(history_id))
+
+        assert record is not None
+
+        return record
+
+    def get_review_history(
+        self,
+        history_id: int,
+    ) -> ReviewHistoryRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM review_history
+                WHERE id = ?
+                """,
+                (history_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return ReviewHistoryRecord(**dict(row))
+
+    def list_review_history(
+        self,
+        task_id: str,
+    ) -> list[ReviewHistoryRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM review_history
+                WHERE task_id = ?
+                ORDER BY sequence ASC
+                """,
+                (task_id,),
+            ).fetchall()
+
+        return [ReviewHistoryRecord(**dict(row)) for row in rows]
+
+    def latest_review_history(
+        self,
+        task_id: str,
+    ) -> ReviewHistoryRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM review_history
+                WHERE task_id = ?
+                ORDER BY sequence DESC
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return ReviewHistoryRecord(**dict(row))
+
+    def mark_review_imported(
+        self,
+        *,
+        history_id: int,
+        verdict: str,
+        packet_id: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE review_history
+                SET verdict = ?,
+                    packet_id = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    verdict,
+                    packet_id,
+                    (ReviewHistoryStatus.IMPORTED.value),
+                    utc_now(),
+                    history_id,
+                ),
             )

@@ -17,6 +17,7 @@ from aiflow.models import (
     PacketStage,
     ParsedPacket,
     ProjectRecord,
+    ReviewHistoryStatus,
     TaskRecord,
     TaskStatus,
 )
@@ -25,6 +26,10 @@ from aiflow.packets import (
 )
 from aiflow.review import (
     compute_worktree_fingerprint,
+)
+from aiflow.review_history import (
+    PreparedReview,
+    get_review_by_sequence,
 )
 
 
@@ -84,6 +89,7 @@ def parse_review_verdict(
 
     try:
         verdict = ReviewVerdict(verdict_text)
+
     except ValueError as exc:
         raise PacketError("review verdict must be exactly SHIP or CHANGES_REQUESTED") from exc
 
@@ -159,15 +165,66 @@ def build_followup_implementation_prompt(
     ).strip()
 
 
+def _numeric_review_directories(
+    task: TaskRecord,
+) -> list[Path]:
+    reviews_dir = task.task_dir / "reviews"
+
+    if not reviews_dir.exists():
+        return []
+
+    try:
+        entries = list(reviews_dir.iterdir())
+
+    except OSError as exc:
+        raise StateError("review history directory could not be read") from exc
+
+    directories = [
+        entry
+        for entry in entries
+        if entry.is_dir() and entry.name.isdigit() and int(entry.name) >= 1
+    ]
+
+    return sorted(
+        directories,
+        key=lambda path: int(path.name),
+        reverse=True,
+    )
+
+
+def _latest_followup_directory(
+    task: TaskRecord,
+) -> Path | None:
+    for directory in _numeric_review_directories(task):
+        prompt = directory / "followup-implementation-prompt.md"
+
+        fingerprint = directory / "review-fingerprint.txt"
+
+        if prompt.exists() and fingerprint.exists():
+            return directory
+
+    return None
+
+
 def followup_prompt_path(
     task: TaskRecord,
 ) -> Path:
+    history_directory = _latest_followup_directory(task)
+
+    if history_directory is not None:
+        return history_directory / "followup-implementation-prompt.md"
+
     return task.task_dir / "followup-implementation-prompt.md"
 
 
 def review_fingerprint_path(
     task: TaskRecord,
 ) -> Path:
+    history_directory = _latest_followup_directory(task)
+
+    if history_directory is not None:
+        return history_directory / "review-fingerprint.txt"
+
     return task.task_dir / "review-fingerprint.txt"
 
 
@@ -203,6 +260,7 @@ def validate_followup_worktree(
 
     try:
         expected = fingerprint_file.read_text(encoding="utf-8").strip()
+
     except OSError as exc:
         raise StateError("follow-up review fingerprint could not be read") from exc
 
@@ -213,10 +271,10 @@ def validate_followup_worktree(
 
     if current != expected:
         raise StateError(
-            "working tree changed after the "
-            "Sol review was imported; restore "
-            "the reviewed state or prepare a "
-            "new review"
+            "working tree changed after "
+            "the Sol review was imported; "
+            "restore the reviewed state or "
+            "prepare a new review"
         )
 
     return current
@@ -231,6 +289,113 @@ def _packet_requires_confirmation(
         or (packet.envelope.execution.model_role.value == "sol")
         or (packet.envelope.execution.reasoning_effort.value == "xhigh")
     )
+
+
+def _prepared_review_for_packet(
+    *,
+    db: Database,
+    task: TaskRecord,
+    packet: ParsedPacket,
+) -> PreparedReview | None:
+    sequence = packet.envelope.review_sequence
+
+    history = db.list_review_history(task.id)
+
+    if sequence is None:
+        if history:
+            raise PacketError(
+                "review_sequence is required for tasks using immutable review history"
+            )
+
+        return None
+
+    prepared = get_review_by_sequence(
+        db=db,
+        task=task,
+        sequence=sequence,
+    )
+
+    if prepared is None:
+        raise PacketError(
+            f"review_sequence does not identify a prepared review for this task: {sequence}"
+        )
+
+    if prepared.record.status != ReviewHistoryStatus.PREPARED:
+        raise PacketError("review has already been imported or is not in the prepared state")
+
+    packet_fingerprint = packet.envelope.review_fingerprint
+
+    if prepared.record.fingerprint != packet_fingerprint:
+        raise PacketError("review fingerprint does not match the prepared review history record")
+
+    fingerprint_path = prepared.artifacts.fingerprint_path
+
+    if not fingerprint_path.exists():
+        raise StateError("prepared review fingerprint artifact is missing")
+
+    try:
+        stored_fingerprint = fingerprint_path.read_text(encoding="utf-8").strip()
+
+    except OSError as exc:
+        raise StateError("prepared review fingerprint artifact could not be read") from exc
+
+    if stored_fingerprint != packet_fingerprint:
+        raise PacketError(
+            "review fingerprint does not match the immutable prepared review artifact"
+        )
+
+    return prepared
+
+
+def _ensure_import_targets_unused(
+    *,
+    review_path: Path,
+    raw_packet_path: Path,
+    followup_path: Path | None,
+) -> None:
+    existing = [
+        path
+        for path in (
+            review_path,
+            raw_packet_path,
+            followup_path,
+        )
+        if (path is not None and path.exists())
+    ]
+
+    if existing:
+        raise StateError(f"immutable review import artifact already exists: {existing[0]}")
+
+
+def _ensure_legacy_review_fingerprint(
+    *,
+    task: TaskRecord,
+    review_fingerprint: str,
+) -> Path:
+    fingerprint_path = task.task_dir / "review-fingerprint.txt"
+
+    if fingerprint_path.exists():
+        try:
+            existing = fingerprint_path.read_text(encoding="utf-8").strip()
+
+        except OSError as exc:
+            raise StateError("legacy review fingerprint could not be read") from exc
+
+        if existing != review_fingerprint:
+            raise PacketError("legacy review fingerprint does not match the imported review packet")
+
+        return fingerprint_path
+
+    try:
+        fingerprint_path.write_text(
+            review_fingerprint + "\n",
+            encoding="utf-8",
+        )
+
+    except OSError as exc:
+        raise StateError("legacy review fingerprint could not be written") from exc
+
+    return fingerprint_path
 
 
 def import_review_packet(
@@ -256,6 +421,12 @@ def import_review_packet(
     if not review_fingerprint:
         raise PacketError("implementation review packet is missing review_fingerprint")
 
+    prepared = _prepared_review_for_packet(
+        db=db,
+        task=task,
+        packet=packet,
+    )
+
     validate_repository_state(
         project.path,
         expected_sha=task.base_sha,
@@ -267,10 +438,10 @@ def import_review_packet(
 
     if current_fingerprint != review_fingerprint:
         raise PacketError(
-            "review packet is stale: the "
-            "current working tree no longer "
-            "matches the worktree reviewed "
-            "by Sol"
+            "review packet is stale: "
+            "the current working tree "
+            "no longer matches the "
+            "worktree reviewed by Sol"
         )
 
     verdict = parse_review_verdict(packet.body)
@@ -280,11 +451,35 @@ def import_review_packet(
         exist_ok=True,
     )
 
-    review_path = task.task_dir / "review.md"
+    if prepared is not None:
+        review_path = prepared.artifacts.review_path
 
-    raw_packet_path = task.task_dir / "review-packet.txt"
+        raw_packet_path = prepared.artifacts.packet_path
 
-    fingerprint_path = review_fingerprint_path(task)
+    else:
+        review_path = task.task_dir / "review.md"
+
+        raw_packet_path = task.task_dir / "review-packet.txt"
+
+        _ensure_legacy_review_fingerprint(
+            task=task,
+            review_fingerprint=review_fingerprint,
+        )
+
+    followup_path: Path | None = None
+
+    if verdict == ReviewVerdict.CHANGES_REQUESTED:
+        if prepared is not None:
+            followup_path = prepared.artifacts.followup_prompt_path
+
+        else:
+            followup_path = task.task_dir / "followup-implementation-prompt.md"
+
+    _ensure_import_targets_unused(
+        review_path=review_path,
+        raw_packet_path=(raw_packet_path),
+        followup_path=followup_path,
+    )
 
     review_path.write_text(
         packet.body + "\n",
@@ -296,22 +491,14 @@ def import_review_packet(
         encoding="utf-8",
     )
 
-    fingerprint_path.write_text(
-        review_fingerprint + "\n",
-        encoding="utf-8",
-    )
-
-    followup_path: Path | None = None
-
-    if verdict == ReviewVerdict.CHANGES_REQUESTED:
-        plan_path = task.plan_path or task.task_dir / "plan.md"
+    if followup_path is not None:
+        plan_path = task.plan_path or (task.task_dir / "plan.md")
 
         try:
             plan_body = plan_path.read_text(encoding="utf-8")
+
         except OSError as exc:
             raise StateError("approved implementation plan could not be read") from exc
-
-        followup_path = followup_prompt_path(task)
 
         followup_path.write_text(
             build_followup_implementation_prompt(
@@ -330,12 +517,19 @@ def import_review_packet(
         sha256=packet.sha256,
     )
 
+    if prepared is not None:
+        db.mark_review_imported(
+            history_id=(prepared.record.id),
+            verdict=verdict.value,
+            packet_id=(packet.envelope.packet_id),
+        )
+
     needs_confirmation = _packet_requires_confirmation(packet)
 
     if verdict == ReviewVerdict.SHIP:
         db.update_task_status(
             task_id=task.id,
-            status=TaskStatus.COMPLETED,
+            status=(TaskStatus.COMPLETED),
         )
 
     else:
@@ -350,7 +544,7 @@ def import_review_packet(
     return ReviewImportResult(
         verdict=verdict,
         review_path=review_path,
-        raw_packet_path=raw_packet_path,
+        raw_packet_path=(raw_packet_path),
         followup_prompt_path=(followup_path),
         review_fingerprint=(review_fingerprint),
         requires_human_approval=(needs_confirmation),

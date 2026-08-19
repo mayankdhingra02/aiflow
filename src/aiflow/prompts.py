@@ -21,11 +21,11 @@ def build_planner_prompt(
         "project_id": project.id,
         "task_id": task.id,
         "nonce": task.nonce,
-        "stage": "implementation_plan",
+        "stage": ("implementation_plan"),
         "base_sha": task.base_sha,
         "execution": {
             "model_role": "terra",
-            "reasoning_effort": "medium",
+            "reasoning_effort": ("medium"),
         },
         "risk": {
             "level": "medium",
@@ -172,8 +172,12 @@ def build_review_prompt(
     validation_summary: str,
     codex_event_summary: str,
     git_evidence: str,
+    review_sequence: (int | None) = None,
 ) -> str:
-    envelope_template = {
+    envelope_template: dict[
+        str,
+        object,
+    ] = {
         "packet_version": 1,
         "packet_id": ("generate-a-new-unique-id"),
         "project_id": project.id,
@@ -181,22 +185,47 @@ def build_review_prompt(
         "nonce": task.nonce,
         "stage": ("implementation_review"),
         "base_sha": task.base_sha,
-        "review_fingerprint": (review_fingerprint),
-        "execution": {
-            "model_role": "luna",
-            "reasoning_effort": "low",
-        },
-        "risk": {
-            "level": "low",
-            "touches_authentication": False,
-            "touches_authorization": False,
-            "touches_database": False,
-            "destructive_change": False,
-            "touches_secrets": False,
-            ("touches_production_infrastructure"): False,
-        },
-        ("requires_human_approval_before_execution"): False,
     }
+
+    if review_sequence is not None:
+        envelope_template["review_sequence"] = review_sequence
+
+    envelope_template["review_fingerprint"] = review_fingerprint
+
+    envelope_template["execution"] = {
+        "model_role": "luna",
+        "reasoning_effort": "low",
+    }
+
+    envelope_template["risk"] = {
+        "level": "low",
+        "touches_authentication": False,
+        "touches_authorization": False,
+        "touches_database": False,
+        "destructive_change": False,
+        "touches_secrets": False,
+        ("touches_production_infrastructure"): False,
+    }
+
+    envelope_template[("requires_human_approval_before_execution")] = False
+
+    review_sequence_identity = (
+        f"- Review sequence: {review_sequence}" if review_sequence is not None else ""
+    )
+
+    preserve_sequence = ("review sequence, ") if review_sequence is not None else ""
+
+    sequence_rule = (
+        (
+            "The review_sequence identifies "
+            "the exact immutable Aiflow review "
+            "preparation. Preserve it exactly. "
+            "Never invent, alter, omit, or "
+            "recompute it."
+        )
+        if review_sequence is not None
+        else ""
+    )
 
     return dedent(
         f"""
@@ -212,15 +241,17 @@ def build_review_prompt(
         - Git remote: {project.remote_url or "No origin remote configured"}
         - Base branch: {task.branch}
         - Base commit: {task.base_sha}
+        {review_sequence_identity}
         - Reviewed worktree fingerprint: {review_fingerprint}
         - Task ID: {task.id}
         - Nonce: {task.nonce}
 
-        Preserve Project ID, Task ID, nonce, base commit, and review fingerprint exactly in
-        your output.
+        Preserve Project ID, Task ID, nonce, base commit, {preserve_sequence}and review fingerprint
+        exactly in your output.
 
-        The review_fingerprint identifies the exact local working tree whose evidence you are
-        reviewing. Preserve it exactly. Never invent, alter, omit, or recompute it.
+        {sequence_rule}
+        The review_fingerprint identifies the exact local working tree whose evidence
+        you are reviewing. Preserve it exactly. Never invent, alter, omit, or recompute it.
 
         ## Review rules
 
