@@ -80,6 +80,26 @@ The first browser URL read prompts for permission to control Google Chrome (and 
 Approve it, or the Chat line stays on "No ChatGPT conversation detected". Chat mapping is
 only a convenience — every project button works without it.
 
+## VS Code companion bridge
+
+The app listens on `127.0.0.1:47321` (loopback only) from launch, speaking newline-delimited
+JSON to the optional VS Code companion in `vscode/aiflow-vscode/`. The companion is a
+viewer/controller for *this* run — it never starts Codex and never opens a second session.
+
+Outbound events: `hello`, `snapshot`, `run_started`, `run_status`, `agent_message`,
+`approval_requested`, `question_requested`, `run_completed`, `run_failed`, `run_cancelled`,
+`file_open`. Inbound commands: `ping`, `cancel`, `approve`, `deny`, `answer_question`.
+
+The bridge is transport only. `WidgetViewModel` stays the source of truth:
+
+- A command carries a verb, an optional request id, and answers — never a repository path,
+  sandbox, model, prompt, or shell command.
+- `approve`/`deny`/`answer_question` are applied only when the id matches the request that is
+  currently pending; a stale id resolves nothing.
+- `file_open` paths are validated against the active saved repository before being sent.
+- Malformed or unknown frames are dropped, and losing the client never affects a running
+  Codex session. A reconnecting client is sent a snapshot and rebuilds its UI from it.
+
 ## Build, test, regenerate
 
 ```sh
