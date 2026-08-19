@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,6 +255,96 @@ def _safe_untracked_text(
     )
 
 
+def compute_worktree_fingerprint(
+    root: Path,
+) -> str:
+    root = root.resolve()
+
+    digest = hashlib.sha256()
+
+    tracked_diff = run_git(
+        [
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-color",
+            "HEAD",
+            "--",
+        ],
+        root,
+        required=True,
+    )
+
+    digest.update(b"AIFLOW_TRACKED_V1\0")
+
+    digest.update(tracked_diff.encode())
+
+    untracked_output = run_git(
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        root,
+        required=True,
+    )
+
+    untracked_files = sorted(path for path in untracked_output.split("\0") if path)
+
+    digest.update(b"\0AIFLOW_UNTRACKED_V1\0")
+
+    for relative_path in untracked_files:
+        digest.update(relative_path.encode())
+        digest.update(b"\0")
+
+        candidate = root / relative_path
+
+        if candidate.is_symlink():
+            try:
+                target = candidate.readlink()
+            except OSError as exc:
+                digest.update((f"<UNREADABLE_SYMLINK:{exc}>").encode())
+            else:
+                digest.update(b"<SYMLINK>")
+                digest.update(str(target).encode())
+
+            digest.update(b"\0")
+            continue
+
+        try:
+            resolved = candidate.resolve()
+
+            resolved.relative_to(root)
+        except (
+            OSError,
+            ValueError,
+        ):
+            digest.update(b"<UNSAFE_PATH>\0")
+            continue
+
+        if not resolved.is_file():
+            digest.update(b"<NON_REGULAR>\0")
+            continue
+
+        try:
+            with resolved.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+
+                    if not chunk:
+                        break
+
+                    digest.update(chunk)
+
+        except OSError as exc:
+            digest.update((f"<UNREADABLE_FILE:{exc}>").encode())
+
+        digest.update(b"\0")
+
+    return digest.hexdigest()
+
+
 def collect_git_review_evidence(
     root: Path,
 ) -> GitReviewEvidence:
@@ -313,6 +404,7 @@ def collect_git_review_evidence(
 
         if _looks_sensitive(path) or _contains_credential_like_content(path):
             omitted_files.append(path)
+
             sections.append(
                 f"### {display_path}\n"
                 "[Aiflow omitted this diff "
@@ -336,6 +428,7 @@ def collect_git_review_evidence(
 
         if _contains_credential_like_content(diff):
             omitted_files.append(path)
+
             sections.append(
                 f"### {display_path}\n"
                 "[Aiflow omitted this diff "
@@ -368,6 +461,7 @@ def collect_git_review_evidence(
 
         if _looks_sensitive(path) or _contains_credential_like_content(path):
             omitted_files.append(path)
+
             sections.append(
                 f"### {display_path} "
                 "(untracked)\n"
@@ -384,6 +478,7 @@ def collect_git_review_evidence(
 
         if text is None:
             omitted_files.append(path)
+
             sections.append(
                 f"### {display_path} (untracked)\n[Aiflow omitted this non-regular or unsafe file.]"
             )
@@ -391,6 +486,7 @@ def collect_git_review_evidence(
 
         if _contains_credential_like_content(text):
             omitted_files.append(path)
+
             sections.append(
                 f"### {display_path} "
                 "(untracked)\n"
@@ -444,6 +540,15 @@ def prepare_review_artifacts(
     task.task_dir.mkdir(
         parents=True,
         exist_ok=True,
+    )
+
+    worktree_fingerprint = compute_worktree_fingerprint(project.path)
+
+    fingerprint_path = task.task_dir / "review-fingerprint.txt"
+
+    fingerprint_path.write_text(
+        worktree_fingerprint + "\n",
+        encoding="utf-8",
     )
 
     events_path = task.task_dir / "codex-events.jsonl"
@@ -537,6 +642,7 @@ def prepare_review_artifacts(
     prompt = build_review_prompt(
         project=project,
         task=task,
+        review_fingerprint=(worktree_fingerprint),
         plan_body=plan_body,
         implementation_report=(implementation_report),
         validation_summary=(validation_summary),

@@ -142,7 +142,7 @@ def build_implementation_prompt(
         not blindly follow stale line numbers. Use the smallest coherent change that satisfies
         the plan, preserve established architecture, and do not broaden scope.
 
-        Do not push, merge, rewrite public history, expose secrets, weaken tests, or use
+        Do not commit, push, merge, rewrite public history, expose secrets, weaken tests, or use
         danger-full-access. Stop and report instead of guessing when the plan conflicts with the
         repository, requires a destructive operation, or needs credentials or production access.
 
@@ -166,6 +166,7 @@ def build_review_prompt(
     *,
     project: ProjectRecord,
     task: TaskRecord,
+    review_fingerprint: str,
     plan_body: str,
     implementation_report: str,
     validation_summary: str,
@@ -178,8 +179,9 @@ def build_review_prompt(
         "project_id": project.id,
         "task_id": task.id,
         "nonce": task.nonce,
-        "stage": "implementation_review",
+        "stage": ("implementation_review"),
         "base_sha": task.base_sha,
+        "review_fingerprint": (review_fingerprint),
         "execution": {
             "model_role": "luna",
             "reasoning_effort": "low",
@@ -210,10 +212,15 @@ def build_review_prompt(
         - Git remote: {project.remote_url or "No origin remote configured"}
         - Base branch: {task.branch}
         - Base commit: {task.base_sha}
+        - Reviewed worktree fingerprint: {review_fingerprint}
         - Task ID: {task.id}
         - Nonce: {task.nonce}
 
-        Preserve Project ID, Task ID, nonce, and base commit exactly in your output.
+        Preserve Project ID, Task ID, nonce, base commit, and review fingerprint exactly in
+        your output.
+
+        The review_fingerprint identifies the exact local working tree whose evidence you are
+        reviewing. Preserve it exactly. Never invent, alter, omit, or recompute it.
 
         ## Review rules
 

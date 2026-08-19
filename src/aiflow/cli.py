@@ -56,6 +56,13 @@ from aiflow.prompts import (
 from aiflow.review import (
     prepare_review_artifacts,
 )
+from aiflow.review_loop import (
+    ReviewVerdict,
+    followup_prompt_path,
+    import_review_packet,
+    is_followup_execution,
+    validate_followup_worktree,
+)
 from aiflow.workflow import (
     validate_implemented_task,
 )
@@ -291,6 +298,7 @@ def start(
         task_id = f"{project.id}-{uuid.uuid4().hex[:12]}"
 
         nonce = secrets.token_hex(16)
+
         task_dir = task_directory(task_id)
 
         title = normalized_request.splitlines()[0][:100]
@@ -356,7 +364,7 @@ def start(
                 f"Project: {project.name}\n"
                 f"Task ID: {task.id}\n"
                 f"Base SHA: {task.base_sha}\n"
-                f"Task files: "
+                "Task files: "
                 f"{task.task_dir}\n\n"
                 f"{next_step}"
             ),
@@ -558,6 +566,122 @@ def import_packet(
     )
 
 
+@app.command("import-review")
+def import_review(
+    clipboard: Annotated[
+        bool,
+        typer.Option(
+            "--clipboard",
+            help=("Read the Sol review packet from the clipboard."),
+        ),
+    ] = False,
+    file: Annotated[
+        Path | None,
+        typer.Option(
+            "--file",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None,
+) -> None:
+    """Import a Sol implementation review packet."""
+    if clipboard == (file is not None):
+        _fail("choose exactly one source: --clipboard or --file")
+
+    try:
+        text = paste_text() if clipboard else file.read_text(encoding="utf-8")
+
+        packet = parse_packet(text)
+
+        if packet.envelope.stage != PacketStage.IMPLEMENTATION_REVIEW:
+            raise PacketError(
+                f"this command accepts implementation_review packets, got {packet.envelope.stage}"
+            )
+
+        db = _db()
+
+        task = db.get_task(packet.envelope.task_id)
+
+        if task is None:
+            raise PacketError(f"unknown task ID: {packet.envelope.task_id}")
+
+        project = db.get_project(task.project_id)
+
+        if project is None:
+            raise StateError(f"project no longer exists: {task.project_id}")
+
+        result = import_review_packet(
+            db=db,
+            project=project,
+            task=task,
+            packet=packet,
+        )
+
+    except (
+        AiflowError,
+        OSError,
+    ) as exc:
+        _fail(str(exc))
+
+    if result.verdict == ReviewVerdict.SHIP:
+        console.print(
+            Panel.fit(
+                (
+                    "[bold green]"
+                    "Sol review imported: SHIP."
+                    "[/bold green]\n"
+                    f"Task: {task.id}\n"
+                    f"Review: {result.review_path}\n"
+                    "Status: completed\n\n"
+                    "The implementation review "
+                    "loop is complete. Commit or "
+                    "otherwise integrate the "
+                    "reviewed repository changes "
+                    "using your normal Git workflow."
+                ),
+                title="Aiflow task completed",
+            )
+        )
+
+        return
+
+    warning = (
+        "\n[bold yellow]"
+        "Explicit human approval is required "
+        "before the follow-up Codex execution."
+        "[/bold yellow]"
+        if result.requires_human_approval
+        else ""
+    )
+
+    console.print(
+        Panel.fit(
+            (
+                "[bold yellow]"
+                "Sol requested changes."
+                "[/bold yellow]\n"
+                f"Task: {task.id}\n"
+                f"Review: {result.review_path}\n"
+                "Follow-up prompt: "
+                f"{result.followup_prompt_path}\n"
+                "Model: "
+                f"{packet.envelope.execution.model_role.value}\n"
+                "Reasoning: "
+                f"{packet.envelope.execution.reasoning_effort.value}\n"
+                "Risk: "
+                f"{packet.envelope.risk.level}"
+                f"{warning}\n\n"
+                "The reviewed worktree is now "
+                "fingerprint-locked.\n"
+                "Preview the follow-up with:\n"
+                f"aiflow run {task.id} --dry-run"
+            ),
+            title="Follow-up implementation ready",
+        )
+    )
+
+
 @app.command()
 def run(
     task_id: Annotated[
@@ -586,7 +710,7 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Preview or execute the Codex implementation command for a task."""
+    """Preview or execute an initial or follow-up Codex implementation."""
     try:
         db = _db()
 
@@ -597,6 +721,7 @@ def run(
 
         if task.status not in {
             TaskStatus.READY_TO_RUN,
+            TaskStatus.REVIEW_IMPORTED,
             TaskStatus.FAILED,
         }:
             raise StateError(f"task is not ready to run; current status is {task.status.value}")
@@ -609,26 +734,46 @@ def run(
         if not task.recommended_model or not task.reasoning_effort:
             raise StateError("task does not contain a model recommendation")
 
-        validate_repository_state(
-            project.path,
-            expected_sha=task.base_sha,
-            expected_branch=task.branch,
-        )
+        followup = is_followup_execution(task)
+
+        if followup:
+            validate_followup_worktree(
+                project=project,
+                task=task,
+            )
+
+            prompt_path = followup_prompt_path(task)
+
+        else:
+            validate_repository_state(
+                project.path,
+                expected_sha=task.base_sha,
+                expected_branch=task.branch,
+            )
+
+            prompt_path = task.task_dir / "implementation-prompt.md"
+
+        if not prompt_path.exists():
+            raise StateError(f"implementation prompt does not exist: {prompt_path}")
 
         model_id = MODEL_BY_ROLE[task.recommended_model]
 
-        prompt_path = task.task_dir / "implementation-prompt.md"
-
+        # These represent the latest Codex pass.
+        # Follow-up runs intentionally replace the
+        # previous latest-pass report/event stream;
+        # historical review packets remain stored
+        # separately.
         report_path = task.task_dir / "implementation-report.md"
 
         events_path = task.task_dir / "codex-events.jsonl"
 
         if task.requires_human_approval and not approve_high_risk and not dry_run:
             raise StateError(
-                "this plan requires explicit "
-                "high-risk approval; inspect it "
-                "and rerun with "
-                "--execute --approve-high-risk"
+                "this execution requires "
+                "explicit high-risk approval; "
+                "inspect it and rerun with "
+                "--execute "
+                "--approve-high-risk"
             )
 
         spec = CodexRunSpec(
@@ -644,9 +789,12 @@ def run(
     except AiflowError as exc:
         _fail(str(exc))
 
+    execution_kind = "Follow-up implementation" if followup else "Initial implementation"
+
     console.print(
         Panel(
             (
+                f"Pass: {execution_kind}\n"
                 f"Project: {project.name}\n"
                 f"Repository: {project.path}\n"
                 f"Model: {model_id}\n"
@@ -656,6 +804,8 @@ def run(
                 f"{task.risk_level or 'unknown'}\n"
                 "Explicit approval required: "
                 f"{task.requires_human_approval}\n"
+                "Prompt: "
+                f"{prompt_path}\n"
                 "Codex events: "
                 f"{events_path}\n\n"
                 "[bold]Command[/bold]\n"
@@ -757,8 +907,8 @@ def run(
         Panel.fit(
             (
                 "[bold green]"
-                "Implementation and validation "
-                "completed."
+                f"{execution_kind} and "
+                "validation completed."
                 "[/bold green]\n"
                 f"Codex report: {report_path}\n"
                 f"Codex events: {events_path}\n"
@@ -823,7 +973,7 @@ def validate(
                     "[bold yellow]"
                     "Validation did not pass."
                     "[/bold yellow]\n"
-                    f"Summary: "
+                    "Summary: "
                     f"{summary.summary_path}\n"
                     "Commands discovered: "
                     f"{len(summary.commands)}\n"
@@ -843,7 +993,7 @@ def validate(
                 "[bold green]"
                 "Validation passed."
                 "[/bold green]\n"
-                f"Summary: "
+                "Summary: "
                 f"{summary.summary_path}\n"
                 "Validation commands: "
                 f"{len(summary.results)}\n"
@@ -960,7 +1110,9 @@ def prepare_review(
     next_step = (
         "The freshly validated review "
         "prompt is on your clipboard.\n"
-        "Paste it into ChatGPT Web using Sol."
+        "Paste it into ChatGPT Web using Sol.\n"
+        "Then copy Sol's AIFLOW packet and run:\n"
+        "aiflow import-review --clipboard"
         if copy
         else (
             "The freshly validated review "
@@ -1000,12 +1152,14 @@ def show(
     ],
 ) -> None:
     """Show one task and its artifact paths."""
-    task = _db().get_task(task_id)
+    db = _db()
+
+    task = db.get_task(task_id)
 
     if task is None:
         _fail(f"unknown task ID: {task_id}")
 
-    project = _db().get_project(task.project_id)
+    project = db.get_project(task.project_id)
 
     console.print(
         Panel.fit(

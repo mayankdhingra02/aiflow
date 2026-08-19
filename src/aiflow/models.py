@@ -87,6 +87,10 @@ class PacketEnvelope(BaseModel):
     nonce: str = Field(min_length=12, max_length=128)
     stage: PacketStage
     base_sha: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
+    review_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     execution: ExecutionRecommendation
     risk: RiskAssessment
     requires_human_approval_before_execution: bool = False
