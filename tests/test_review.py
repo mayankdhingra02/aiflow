@@ -34,6 +34,7 @@ def _setup_repository(
     tmp_path: Path,
 ) -> Path:
     root = tmp_path / "repo"
+
     root.mkdir()
 
     _git(
@@ -252,7 +253,9 @@ def test_prepare_review_artifacts_writes_sanitized_sol_prompt(
     )
 
     assert artifacts.prompt_path.exists()
+
     assert artifacts.evidence_path.exists()
+
     assert artifacts.codex_summary_path.exists()
 
     prompt = artifacts.prompt_path.read_text(
@@ -263,7 +266,10 @@ def test_prepare_review_artifacts_writes_sanitized_sol_prompt(
 
     assert '"stage": "implementation_review"' in prompt
 
+    assert '"review_fingerprint":' in prompt
+
     assert "value = 2" in prompt
+
     assert "Update the value." in prompt
 
     assert str(root) not in prompt
@@ -273,6 +279,16 @@ def test_prepare_review_artifacts_writes_sanitized_sol_prompt(
     assert "<REPOSITORY_ROOT>" in prompt
 
     assert "<HOME>" in prompt
+
+    fingerprint_path = task_dir / "review-fingerprint.txt"
+
+    assert fingerprint_path.exists()
+
+    fingerprint = fingerprint_path.read_text(encoding="utf-8").strip()
+
+    assert len(fingerprint) == 64
+
+    assert fingerprint in prompt
 
 
 def test_codex_report_with_credential_is_omitted_from_review_prompt(

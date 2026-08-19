@@ -136,6 +136,7 @@ def test_validation_success_marks_review_ready(
     task = db.get_task(task_id)
 
     assert task is not None
+
     assert task.status == TaskStatus.REVIEW_READY
 
 
@@ -163,6 +164,7 @@ def test_validation_failure_marks_validation_failed(
     task = db.get_task(task_id)
 
     assert task is not None
+
     assert task.status == TaskStatus.VALIDATION_FAILED
 
 
@@ -195,6 +197,7 @@ def test_validation_exception_marks_validation_failed(
     task = db.get_task(task_id)
 
     assert task is not None
+
     assert task.status == TaskStatus.VALIDATION_FAILED
 
 
@@ -227,6 +230,7 @@ def test_validation_failed_task_can_be_revalidated(
     task = db.get_task(task_id)
 
     assert task is not None
+
     assert task.status == TaskStatus.REVIEW_READY
 
 
@@ -259,4 +263,71 @@ def test_waiting_for_review_task_can_be_revalidated(
     task = db.get_task(task_id)
 
     assert task is not None
+
     assert task.status == TaskStatus.REVIEW_READY
+
+
+def test_failed_task_can_validate_to_review_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, task_id = _setup_task(tmp_path)
+
+    db.update_task_status(
+        task_id=task_id,
+        status=TaskStatus.FAILED,
+    )
+
+    summary = _successful_summary(tmp_path)
+
+    monkeypatch.setattr(
+        ("aiflow.workflow.run_project_validations"),
+        lambda **_kwargs: summary,
+    )
+
+    result = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    assert result.passed is True
+
+    task = db.get_task(task_id)
+
+    assert task is not None
+
+    assert task.status == TaskStatus.REVIEW_READY
+
+
+def test_failed_task_can_validate_to_validation_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, task_id = _setup_task(tmp_path)
+
+    db.update_task_status(
+        task_id=task_id,
+        status=TaskStatus.FAILED,
+    )
+
+    summary = _failed_summary(tmp_path)
+
+    monkeypatch.setattr(
+        ("aiflow.workflow.run_project_validations"),
+        lambda **_kwargs: summary,
+    )
+
+    result = validate_implemented_task(
+        db=db,
+        project=project,
+        task_id=task_id,
+    )
+
+    assert result.passed is False
+
+    task = db.get_task(task_id)
+
+    assert task is not None
+
+    assert task.status == TaskStatus.VALIDATION_FAILED

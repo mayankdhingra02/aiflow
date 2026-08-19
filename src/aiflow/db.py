@@ -234,6 +234,38 @@ class Database:
                 ),
             )
 
+    def update_task_followup(
+        self,
+        *,
+        task_id: str,
+        recommended_model: str,
+        reasoning_effort: str,
+        risk_level: str,
+        requires_human_approval: bool,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?,
+                    recommended_model = ?,
+                    reasoning_effort = ?,
+                    risk_level = ?,
+                    requires_human_approval = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    TaskStatus.REVIEW_IMPORTED.value,
+                    recommended_model,
+                    reasoning_effort,
+                    risk_level,
+                    int(requires_human_approval),
+                    utc_now(),
+                    task_id,
+                ),
+            )
+
     def update_task_status(
         self,
         *,

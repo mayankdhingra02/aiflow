@@ -27,6 +27,7 @@ def validate_implemented_task(
         TaskStatus.VALIDATION_FAILED,
         TaskStatus.REVIEW_READY,
         TaskStatus.WAITING_FOR_REVIEW,
+        TaskStatus.FAILED,
     }:
         raise StateError(f"task cannot be validated from status {task.status.value}")
 
@@ -44,19 +45,19 @@ def validate_implemented_task(
     except KeyboardInterrupt:
         db.update_task_status(
             task_id=task.id,
-            status=TaskStatus.VALIDATION_FAILED,
+            status=(TaskStatus.VALIDATION_FAILED),
         )
         raise
     except (AiflowError, OSError):
         db.update_task_status(
             task_id=task.id,
-            status=TaskStatus.VALIDATION_FAILED,
+            status=(TaskStatus.VALIDATION_FAILED),
         )
         raise
     except Exception:
         db.update_task_status(
             task_id=task.id,
-            status=TaskStatus.VALIDATION_FAILED,
+            status=(TaskStatus.VALIDATION_FAILED),
         )
         raise
 

@@ -6,7 +6,11 @@ import re
 
 from pydantic import ValidationError
 
-from aiflow.constants import PACKET_BODY_SEPARATOR, PACKET_END, PACKET_START
+from aiflow.constants import (
+    PACKET_BODY_SEPARATOR,
+    PACKET_END,
+    PACKET_START,
+)
 from aiflow.errors import PacketError
 from aiflow.models import (
     PacketEnvelope,
@@ -17,36 +21,68 @@ from aiflow.models import (
 )
 
 
-def _extract_packet_region(text: str) -> str:
+def _extract_packet_region(
+    text: str,
+) -> str:
     start_index = text.find(PACKET_START)
+
     if start_index < 0:
         raise PacketError(f"missing packet marker: {PACKET_START}")
 
-    end_index = text.find(PACKET_END, start_index)
+    end_index = text.find(
+        PACKET_END,
+        start_index,
+    )
+
     if end_index < 0:
         raise PacketError(f"missing packet marker: {PACKET_END}")
 
     return text[start_index : end_index + len(PACKET_END)]
 
 
-def parse_packet(text: str) -> ParsedPacket:
+def parse_packet(
+    text: str,
+) -> ParsedPacket:
     raw = text.strip()
+
     if not raw:
         raise PacketError("clipboard or file content is empty")
 
     region = _extract_packet_region(raw)
+
     without_start = region[len(PACKET_START) :]
+
     if PACKET_BODY_SEPARATOR not in without_start:
         raise PacketError(f"missing packet separator: {PACKET_BODY_SEPARATOR}")
 
-    envelope_text, body_and_end = without_start.split(PACKET_BODY_SEPARATOR, 1)
-    body = body_and_end.rsplit(PACKET_END, 1)[0].strip()
+    envelope_text, body_and_end = without_start.split(
+        PACKET_BODY_SEPARATOR,
+        1,
+    )
+
+    body = body_and_end.rsplit(
+        PACKET_END,
+        1,
+    )[0].strip()
+
     envelope_text = envelope_text.strip()
 
-    # ChatGPT may place the JSON envelope in a fenced code block. Strip only the
-    # fence lines; do not otherwise mutate the model-produced content.
-    envelope_text = re.sub(r"^```(?:json)?\s*", "", envelope_text, flags=re.IGNORECASE)
-    envelope_text = re.sub(r"\s*```$", "", envelope_text)
+    # ChatGPT may wrap the JSON envelope
+    # in a fenced code block. Strip only the
+    # fence markers and otherwise preserve
+    # the packet content.
+    envelope_text = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        envelope_text,
+        flags=re.IGNORECASE,
+    )
+
+    envelope_text = re.sub(
+        r"\s*```$",
+        "",
+        envelope_text,
+    )
 
     try:
         payload = json.loads(envelope_text)
@@ -62,11 +98,21 @@ def parse_packet(text: str) -> ParsedPacket:
         raise PacketError("packet body is empty")
 
     digest = hashlib.sha256(region.encode("utf-8")).hexdigest()
-    return ParsedPacket(envelope=envelope, body=body, raw_text=region, sha256=digest)
+
+    return ParsedPacket(
+        envelope=envelope,
+        body=body,
+        raw_text=region,
+        sha256=digest,
+    )
 
 
-def validate_packet_for_task(packet: ParsedPacket, task: TaskRecord) -> None:
+def validate_packet_for_task(
+    packet: ParsedPacket,
+    task: TaskRecord,
+) -> None:
     envelope = packet.envelope
+
     failures: list[str] = []
 
     if (
@@ -77,14 +123,36 @@ def validate_packet_for_task(packet: ParsedPacket, task: TaskRecord) -> None:
             f"task is not waiting for an implementation plan: current status is {task.status.value}"
         )
 
+    if envelope.stage == PacketStage.IMPLEMENTATION_REVIEW and task.status not in {
+        TaskStatus.REVIEW_READY,
+        TaskStatus.WAITING_FOR_REVIEW,
+    }:
+        failures.append(
+            "task is not waiting for an "
+            "implementation review: current "
+            f"status is {task.status.value}"
+        )
+
+    if (
+        envelope.stage == PacketStage.IMPLEMENTATION_PLAN
+        and envelope.review_fingerprint is not None
+    ):
+        failures.append("implementation plan must not contain review_fingerprint")
+
+    if envelope.stage == PacketStage.IMPLEMENTATION_REVIEW and envelope.review_fingerprint is None:
+        failures.append("implementation review must contain review_fingerprint")
+
     if envelope.task_id != task.id:
         failures.append(f"task_id mismatch: expected {task.id}, got {envelope.task_id}")
+
     if envelope.project_id != task.project_id:
         failures.append(
             f"project_id mismatch: expected {task.project_id}, got {envelope.project_id}"
         )
+
     if envelope.nonce != task.nonce:
         failures.append("nonce mismatch")
+
     if envelope.base_sha.lower() != task.base_sha.lower():
         failures.append(f"base_sha mismatch: expected {task.base_sha}, got {envelope.base_sha}")
 
