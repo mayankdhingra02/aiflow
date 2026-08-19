@@ -88,6 +88,23 @@ def _fail(
     raise typer.Exit(code)
 
 
+def _codex_failure_recovery_message(
+    *,
+    task_id: str,
+    detail: str,
+) -> str:
+    return (
+        f"{detail}\n\n"
+        "The Codex pass failed.\n"
+        "If the working tree is unchanged, "
+        "you may retry the Codex pass.\n"
+        "If Codex changed files before "
+        "failing, do not rerun blindly. "
+        "Inspect the changes, then run:\n"
+        f"aiflow validate {task_id}"
+    )
+
+
 def _current_project(
     db: Database,
     path: Path,
@@ -632,15 +649,17 @@ def import_review(
                     "Sol review imported: SHIP."
                     "[/bold green]\n"
                     f"Task: {task.id}\n"
-                    f"Review: {result.review_path}\n"
+                    f"Review: "
+                    f"{result.review_path}\n"
                     "Status: completed\n\n"
                     "The implementation review "
                     "loop is complete. Commit or "
                     "otherwise integrate the "
                     "reviewed repository changes "
-                    "using your normal Git workflow."
+                    "using your normal Git "
+                    "workflow."
                 ),
-                title="Aiflow task completed",
+                title=("Aiflow task completed"),
             )
         )
 
@@ -662,7 +681,8 @@ def import_review(
                 "Sol requested changes."
                 "[/bold yellow]\n"
                 f"Task: {task.id}\n"
-                f"Review: {result.review_path}\n"
+                f"Review: "
+                f"{result.review_path}\n"
                 "Follow-up prompt: "
                 f"{result.followup_prompt_path}\n"
                 "Model: "
@@ -675,9 +695,10 @@ def import_review(
                 "The reviewed worktree is now "
                 "fingerprint-locked.\n"
                 "Preview the follow-up with:\n"
-                f"aiflow run {task.id} --dry-run"
+                f"aiflow run {task.id} "
+                "--dry-run"
             ),
-            title="Follow-up implementation ready",
+            title=("Follow-up implementation ready"),
         )
     )
 
@@ -758,11 +779,6 @@ def run(
 
         model_id = MODEL_BY_ROLE[task.recommended_model]
 
-        # These represent the latest Codex pass.
-        # Follow-up runs intentionally replace the
-        # previous latest-pass report/event stream;
-        # historical review packets remain stored
-        # separately.
         report_path = task.task_dir / "implementation-report.md"
 
         events_path = task.task_dir / "codex-events.jsonl"
@@ -841,7 +857,10 @@ def run(
         )
 
         _fail(
-            "Codex execution interrupted by user",
+            _codex_failure_recovery_message(
+                task_id=task.id,
+                detail=("Codex execution interrupted by user"),
+            ),
             code=130,
         )
 
@@ -851,7 +870,12 @@ def run(
             status=TaskStatus.FAILED,
         )
 
-        _fail(str(exc))
+        _fail(
+            _codex_failure_recovery_message(
+                task_id=task.id,
+                detail=str(exc),
+            )
+        )
 
     if exit_code != 0:
         db.update_task_status(
@@ -860,7 +884,10 @@ def run(
         )
 
         _fail(
-            (f"Codex exited with status {exit_code}"),
+            _codex_failure_recovery_message(
+                task_id=task.id,
+                detail=(f"Codex exited with status {exit_code}"),
+            ),
             code=exit_code,
         )
 
@@ -934,7 +961,7 @@ def validate(
         ),
     ],
 ) -> None:
-    """Run deterministic validation for an implemented task."""
+    """Run deterministic validation for an implemented or failed task."""
     db = _db()
 
     task = db.get_task(task_id)

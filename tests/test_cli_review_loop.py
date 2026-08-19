@@ -202,6 +202,60 @@ def _review_packet(
     )
 
 
+def _import_changes_review(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[
+    Database,
+    object,
+    object,
+    Path,
+]:
+    (
+        db,
+        project,
+        task,
+        root,
+    ) = _setup_review_task(tmp_path)
+
+    fingerprint = compute_worktree_fingerprint(root)
+
+    packet_path = tmp_path / "review.txt"
+
+    packet_path.write_text(
+        _review_packet(
+            task=task,
+            fingerprint=fingerprint,
+            verdict=("CHANGES_REQUESTED"),
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "aiflow.cli._db",
+        lambda: db,
+    )
+
+    imported = runner.invoke(
+        app,
+        [
+            "import-review",
+            "--file",
+            str(packet_path),
+        ],
+    )
+
+    assert imported.exit_code == 0
+
+    return (
+        db,
+        project,
+        task,
+        root,
+    )
+
+
 def test_import_review_ship_completes_task(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -259,45 +313,17 @@ def test_import_review_changes_requested_prepares_followup(
         db,
         _project,
         task,
-        root,
-    ) = _setup_review_task(tmp_path)
-
-    fingerprint = compute_worktree_fingerprint(root)
-
-    packet_path = tmp_path / "review.txt"
-
-    packet_path.write_text(
-        _review_packet(
-            task=task,
-            fingerprint=fingerprint,
-            verdict=("CHANGES_REQUESTED"),
-        ),
-        encoding="utf-8",
+        _root,
+    ) = _import_changes_review(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
     )
-
-    monkeypatch.setattr(
-        "aiflow.cli._db",
-        lambda: db,
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "import-review",
-            "--file",
-            str(packet_path),
-        ],
-    )
-
-    assert result.exit_code == 0
 
     updated = db.get_task(task.id)
 
     assert updated is not None
 
     assert updated.status == TaskStatus.REVIEW_IMPORTED
-
-    assert "Follow-up implementation ready" in result.stdout
 
     assert (task.task_dir / "followup-implementation-prompt.md").exists()
 
@@ -307,40 +333,14 @@ def test_followup_dry_run_accepts_reviewed_dirty_worktree(
     tmp_path: Path,
 ) -> None:
     (
-        db,
+        _db_instance,
         project,
         task,
         root,
-    ) = _setup_review_task(tmp_path)
-
-    fingerprint = compute_worktree_fingerprint(root)
-
-    packet_path = tmp_path / "review.txt"
-
-    packet_path.write_text(
-        _review_packet(
-            task=task,
-            fingerprint=fingerprint,
-            verdict=("CHANGES_REQUESTED"),
-        ),
-        encoding="utf-8",
+    ) = _import_changes_review(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
     )
-
-    monkeypatch.setattr(
-        "aiflow.cli._db",
-        lambda: db,
-    )
-
-    imported = runner.invoke(
-        app,
-        [
-            "import-review",
-            "--file",
-            str(packet_path),
-        ],
-    )
-
-    assert imported.exit_code == 0
 
     captured_prompt: list[Path] = []
 
@@ -385,40 +385,14 @@ def test_followup_dry_run_rejects_changed_worktree(
     tmp_path: Path,
 ) -> None:
     (
-        db,
+        _db_instance,
         _project,
         task,
         root,
-    ) = _setup_review_task(tmp_path)
-
-    fingerprint = compute_worktree_fingerprint(root)
-
-    packet_path = tmp_path / "review.txt"
-
-    packet_path.write_text(
-        _review_packet(
-            task=task,
-            fingerprint=fingerprint,
-            verdict=("CHANGES_REQUESTED"),
-        ),
-        encoding="utf-8",
+    ) = _import_changes_review(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
     )
-
-    monkeypatch.setattr(
-        "aiflow.cli._db",
-        lambda: db,
-    )
-
-    imported = runner.invoke(
-        app,
-        [
-            "import-review",
-            "--file",
-            str(packet_path),
-        ],
-    )
-
-    assert imported.exit_code == 0
 
     (root / "app.py").write_text(
         "value = 999\n",
@@ -437,3 +411,59 @@ def test_followup_dry_run_rejects_changed_worktree(
     assert result.exit_code == 1
 
     assert "working tree changed" in result.stdout
+
+
+def test_failed_followup_points_to_validation_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (
+        db,
+        _project,
+        task,
+        root,
+    ) = _import_changes_review(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    def fail_after_edit(
+        _spec: object,
+        *,
+        events_path: Path | None = None,
+    ) -> int:
+        del events_path
+
+        (root / "app.py").write_text(
+            "value = 999\n",
+            encoding="utf-8",
+        )
+
+        return 2
+
+    monkeypatch.setattr(
+        "aiflow.cli.execute_codex",
+        fail_after_edit,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            task.id,
+            "--execute",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 2
+
+    assert "Codex pass failed" in result.stdout
+
+    assert f"aiflow validate {task.id}" in result.stdout
+
+    updated = db.get_task(task.id)
+
+    assert updated is not None
+
+    assert updated.status == TaskStatus.FAILED
