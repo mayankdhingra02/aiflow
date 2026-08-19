@@ -333,7 +333,7 @@ def test_followup_dry_run_accepts_reviewed_dirty_worktree(
     tmp_path: Path,
 ) -> None:
     (
-        _db_instance,
+        db,
         project,
         task,
         root,
@@ -375,7 +375,13 @@ def test_followup_dry_run_accepts_reviewed_dirty_worktree(
 
     assert "Dry run only" in result.stdout
 
-    assert captured_prompt == [task.task_dir / "followup-implementation-prompt.md"]
+    expected_prompt = task.task_dir / "runs" / "001" / "implementation-prompt.md"
+
+    assert captured_prompt == [expected_prompt]
+
+    assert expected_prompt.exists() is False
+
+    assert db.list_run_history(task.id) == []
 
     assert project.path == root.resolve()
 

@@ -16,6 +16,9 @@ from aiflow.models import (
 from aiflow.prompts import (
     build_review_prompt,
 )
+from aiflow.validation_history import (
+    validation_summary_path_for_review,
+)
 
 MAX_DIFF_TOTAL = 100_000
 MAX_DIFF_PER_FILE = 24_000
@@ -58,7 +61,8 @@ CREDENTIAL_PATTERNS = (
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b"),
     re.compile(
-        r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}",
+        r"\bBearer\s+"
+        r"[A-Za-z0-9._~+/=-]{20,}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -168,7 +172,10 @@ def _replace_local_paths(
 
     sanitized = text
 
-    for source, replacement in sorted(
+    for (
+        source,
+        replacement,
+    ) in sorted(
         replacements,
         key=lambda item: len(item[0]),
         reverse=True,
@@ -214,6 +221,7 @@ def _read_limited_text(
         return "[Aiflow: binary file omitted]"
 
     truncated = len(data) > limit
+
     data = data[:limit]
 
     try:
@@ -239,7 +247,9 @@ def _safe_untracked_text(
 
     try:
         resolved = candidate.resolve()
+
         resolved.relative_to(root.resolve())
+
     except (
         OSError,
         ValueError,
@@ -296,6 +306,7 @@ def compute_worktree_fingerprint(
 
     for relative_path in untracked_files:
         digest.update(relative_path.encode())
+
         digest.update(b"\0")
 
         candidate = root / relative_path
@@ -307,24 +318,29 @@ def compute_worktree_fingerprint(
                 digest.update((f"<UNREADABLE_SYMLINK:{exc}>").encode())
             else:
                 digest.update(b"<SYMLINK>")
+
                 digest.update(str(target).encode())
 
             digest.update(b"\0")
+
             continue
 
         try:
             resolved = candidate.resolve()
 
             resolved.relative_to(root)
+
         except (
             OSError,
             ValueError,
         ):
             digest.update(b"<UNSAFE_PATH>\0")
+
             continue
 
         if not resolved.is_file():
             digest.update(b"<NON_REGULAR>\0")
+
             continue
 
         try:
@@ -397,6 +413,7 @@ def collect_git_review_evidence(
 
     omitted_files: list[str] = []
     sections: list[str] = []
+
     current_size = 0
 
     for path in changed_files:
@@ -407,10 +424,12 @@ def collect_git_review_evidence(
 
             sections.append(
                 f"### {display_path}\n"
-                "[Aiflow omitted this diff "
-                "because the path may contain "
-                "sensitive material.]"
+                "[Aiflow omitted this "
+                "diff because the path "
+                "may contain sensitive "
+                "material.]"
             )
+
             continue
 
         diff = run_git(
@@ -431,10 +450,12 @@ def collect_git_review_evidence(
 
             sections.append(
                 f"### {display_path}\n"
-                "[Aiflow omitted this diff "
-                "because credential-like "
-                "material was detected.]"
+                "[Aiflow omitted this "
+                "diff because "
+                "credential-like material "
+                "was detected.]"
             )
+
             continue
 
         if len(diff) > MAX_DIFF_PER_FILE:
@@ -451,6 +472,7 @@ def collect_git_review_evidence(
             section = section[:remaining] + "\n… [total diff truncated by Aiflow]"
 
         sections.append(section)
+
         current_size += len(section)
 
     for path in untracked_files:
@@ -465,10 +487,12 @@ def collect_git_review_evidence(
             sections.append(
                 f"### {display_path} "
                 "(untracked)\n"
-                "[Aiflow omitted this file "
-                "because the path may contain "
-                "sensitive material.]"
+                "[Aiflow omitted this "
+                "file because the path "
+                "may contain sensitive "
+                "material.]"
             )
+
             continue
 
         text = _safe_untracked_text(
@@ -482,6 +506,7 @@ def collect_git_review_evidence(
             sections.append(
                 f"### {display_path} (untracked)\n[Aiflow omitted this non-regular or unsafe file.]"
             )
+
             continue
 
         if _contains_credential_like_content(text):
@@ -490,10 +515,12 @@ def collect_git_review_evidence(
             sections.append(
                 f"### {display_path} "
                 "(untracked)\n"
-                "[Aiflow omitted this file "
-                "because credential-like "
-                "material was detected.]"
+                "[Aiflow omitted this "
+                "file because "
+                "credential-like material "
+                "was detected.]"
             )
+
             continue
 
         section = f"### {display_path} (untracked)\n<aiflow_new_file>\n{text}\n</aiflow_new_file>"
@@ -507,6 +534,7 @@ def collect_git_review_evidence(
             section = section[:remaining] + "\n… [total diff truncated by Aiflow]"
 
         sections.append(section)
+
         current_size += len(section)
 
     diff_markdown = (
@@ -516,10 +544,10 @@ def collect_git_review_evidence(
     return GitReviewEvidence(
         status=status,
         diff_stat=diff_stat,
-        changed_files=changed_files,
-        untracked_files=untracked_files,
+        changed_files=(changed_files),
+        untracked_files=(untracked_files),
         omitted_files=tuple(omitted_files),
-        diff_markdown=diff_markdown,
+        diff_markdown=(diff_markdown),
     )
 
 
@@ -536,11 +564,14 @@ def prepare_review_artifacts(
     *,
     project: ProjectRecord,
     task: TaskRecord,
+    implementation_artifact_dir: (Path | None) = None,
 ) -> ReviewArtifacts:
     task.task_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    source_artifact_dir = implementation_artifact_dir or task.task_dir
 
     worktree_fingerprint = compute_worktree_fingerprint(project.path)
 
@@ -551,14 +582,15 @@ def prepare_review_artifacts(
         encoding="utf-8",
     )
 
-    events_path = task.task_dir / "codex-events.jsonl"
+    events_path = source_artifact_dir / "codex-events.jsonl"
 
-    codex_summary_path = task.task_dir / "codex-events-summary.json"
+    codex_summary_path = source_artifact_dir / "codex-events-summary.json"
 
-    write_codex_event_summary(
-        events_path=events_path,
-        summary_path=codex_summary_path,
-    )
+    if not codex_summary_path.exists():
+        write_codex_event_summary(
+            events_path=events_path,
+            summary_path=(codex_summary_path),
+        )
 
     evidence = collect_git_review_evidence(project.path)
 
@@ -600,7 +632,7 @@ def prepare_review_artifacts(
     evidence_text = _sanitize_outbound_artifact(
         evidence_text,
         root=project.path,
-        label="Git review evidence",
+        label=("Git review evidence"),
     )
 
     evidence_path.write_text(
@@ -608,11 +640,11 @@ def prepare_review_artifacts(
         encoding="utf-8",
     )
 
-    plan_path = task.plan_path or task.task_dir / "plan.md"
+    plan_path = task.plan_path or (task.task_dir / "plan.md")
 
-    report_path = task.task_dir / "implementation-report.md"
+    report_path = source_artifact_dir / "implementation-report.md"
 
-    validation_path = task.task_dir / "validation-summary.json"
+    validation_path = validation_summary_path_for_review(source_artifact_dir)
 
     plan_body = _sanitize_outbound_artifact(
         _read_task_artifact(plan_path),
@@ -647,7 +679,7 @@ def prepare_review_artifacts(
         implementation_report=(implementation_report),
         validation_summary=(validation_summary),
         codex_event_summary=(codex_event_summary),
-        git_evidence=evidence_text,
+        git_evidence=(evidence_text),
     )
 
     prompt = _replace_local_paths(

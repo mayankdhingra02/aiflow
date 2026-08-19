@@ -329,3 +329,42 @@ def test_codex_report_with_credential_is_omitted_from_review_prompt(
     assert fake_github_token not in prompt
 
     assert "Codex implementation report because credential-like material was detected" in prompt
+
+
+def test_prepare_review_preserves_existing_codex_summary(
+    tmp_path: Path,
+) -> None:
+    root = _setup_repository(tmp_path)
+
+    (root / "app.py").write_text(
+        "value = 2\n",
+        encoding="utf-8",
+    )
+
+    task_dir = tmp_path / "task"
+
+    _write_review_artifacts(
+        task_dir=task_dir,
+        implementation_report=("Updated app.py.\n"),
+    )
+
+    existing_summary = task_dir / "codex-events-summary.json"
+
+    sentinel = '{"immutable": true}\n'
+
+    existing_summary.write_text(
+        sentinel,
+        encoding="utf-8",
+    )
+
+    project, task = _build_records(
+        root=root,
+        task_dir=task_dir,
+    )
+
+    prepare_review_artifacts(
+        project=project,
+        task=task,
+    )
+
+    assert existing_summary.read_text(encoding="utf-8") == sentinel
