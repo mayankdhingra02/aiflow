@@ -3,6 +3,11 @@ import Foundation
 
 @MainActor
 final class WidgetViewModel: ObservableObject {
+    /// The app's single instance. Referenced by the scene and by the app delegate so the
+    /// companion bridge can start at launch. Tests construct their own instances instead and
+    /// never touch this, so no test binds the bridge port.
+    static let shared = WidgetViewModel()
+
     @Published private(set) var savedProjects: [SavedProject] = []
     @Published private(set) var clipboardPrompt = ""
     @Published private(set) var chatURL: String?
@@ -32,6 +37,11 @@ final class WidgetViewModel: ObservableObject {
     private var client: CodexAppServerClient?
     private var isPopoverVisible = false
     private var notificationsAvailable = true
+
+    /// The companion bridge, if one is attached. Held strongly here while the bridge holds
+    /// the controller weakly, so there is no cycle. The bridge is a mirror only — the run
+    /// never depends on it being present or connected.
+    private var bridge: AiflowBridgeServer?
 
     private static let modelKey = "aiflow.model"
     private static let effortKey = "aiflow.effort"
@@ -254,6 +264,15 @@ final class WidgetViewModel: ObservableObject {
         runningProject = project
         runState = .launching(project)
 
+        var started = BridgeEvent(type: .runStarted)
+        started.project = project.name
+        started.model = selectedModelRole
+        started.effort = effort
+        started.runState = runState.bridgeName
+        // A bounded preview only; the full prompt is not mirrored to the companion.
+        started.promptPreview = String(prompt.prefix(200))
+        emit(started)
+
         Task {
             notificationsAvailable = await notifications.prepareForRun()
             if !notificationsAvailable {
@@ -285,18 +304,21 @@ final class WidgetViewModel: ObservableObject {
         switch event {
         case .started:
             runState = .running(project)
+            emit(.runStatus(runState.bridgeName))
 
         case .approvalRequested(let id, let kind, let summary, let detail, let permissionProfile):
             let request = ApprovalRequest(
                     id: id, kind: kind, summary: summary, detail: detail,
                     projectName: project.name, permissionProfile: permissionProfile)
             runState = .waitingForApproval(request)
+            emit(.approvalRequested(request))
             if !isPopoverVisible && notificationsAvailable { notifications.sendApproval(for: request) }
 
         case .inputRequested(let id, let questions):
             let request = UserQuestion(
                 id: id, questions: questions, projectName: project.name)
             runState = .waitingForInput(request)
+            emit(.questionRequested(request))
             if !isPopoverVisible && notificationsAvailable { notifications.sendQuestion(for: request) }
 
         case .requestResolved(let id):
@@ -306,29 +328,49 @@ final class WidgetViewModel: ObservableObject {
                 return
             }
             runState = .running(project)
+            emit(.runStatus(runState.bridgeName))
 
         case .assistantMessage(let text):
             lastMessage = text
+            emit(.agentMessage(text))
 
         case .finished:
             runState = .completed(project)
+            var completed = BridgeEvent(type: .runCompleted)
+            completed.runState = runState.bridgeName
+            completed.project = project.name
+            completed.message = lastMessage
+            emit(completed)
             if !isPopoverVisible && notificationsAvailable { notifications.sendCompletion(for: project) }
             finishSession()
 
         case .cancelled:
             runState = .cancelled(project)
+            var cancelled = BridgeEvent(type: .runCancelled)
+            cancelled.runState = runState.bridgeName
+            cancelled.project = project.name
+            emit(cancelled)
             finishSession()
 
         case .retrying(let detail):
             // Not terminal: Codex said it will retry, so the session stays open and the run
             // stays busy. Only the note changes.
             notice = "Codex hit a temporary error and is retrying… (\(detail))"
+            var retrying = BridgeEvent(type: .runStatus)
+            retrying.runState = "retrying"
+            retrying.message = detail
+            emit(retrying)
 
         case .failed(let detail):
             // A failure arriving while the turn is being interrupted must not overwrite the
             // cancellation; the run is already on its way to `.cancelled`.
             if case .cancelling = runState { return }
             runState = .failed(project: project, message: detail)
+            var failed = BridgeEvent(type: .runFailed)
+            failed.runState = runState.bridgeName
+            failed.project = project.name
+            failed.message = detail
+            emit(failed)
             if !isPopoverVisible && notificationsAvailable { notifications.sendFailure(for: project) }
             finishSession()
         }
@@ -371,6 +413,7 @@ final class WidgetViewModel: ObservableObject {
         if let question = pendingQuestion { notifications.removePendingRequest(id: question.id) }
 
         runState = .cancelling(project)
+        emit(.runStatus(runState.bridgeName))
         Task { await client?.cancel() }
     }
 
@@ -379,6 +422,129 @@ final class WidgetViewModel: ObservableObject {
         client = nil
         runningProject = nil
         Task { await finishing?.stop() }
+    }
+
+    // MARK: - Companion bridge
+
+    /// Wires the app-lifetime bridge to this view model. The view model stays the single
+    /// source of truth; the bridge only mirrors it outward and forwards commands inward.
+    func attachBridge(_ bridge: AiflowBridgeServer) {
+        self.bridge = bridge
+        bridge.controller = self
+        bridge.start()
+    }
+
+    /// Idempotent: the popover's `.task` can run many times, but only one server is created.
+    func startCompanionBridgeIfNeeded() {
+        guard bridge == nil else { return }
+        attachBridge(AiflowBridgeServer())
+    }
+
+    private func emit(_ event: BridgeEvent) {
+        bridge?.broadcast(event)
+    }
+
+    /// Sends a `file_open` only for a path inside the given saved repository — the active run's
+    /// repository by default. An arbitrary path is never forwarded to the companion, and the
+    /// companion can never supply one: `file_open` is outbound only.
+    @discardableResult
+    func emitFileOpen(path: String, in project: SavedProject? = nil) -> Bool {
+        let scope = project ?? runningProject ?? runState.confirmingProject
+        guard let root = scope?.path else { return false }
+        let resolvedRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard resolved == resolvedRoot || resolved.hasPrefix(resolvedRoot + "/") else {
+            return false
+        }
+        emit(.fileOpen(path: resolved))
+        return true
+    }
+
+    /// Asks a connected companion to open this repository's README — the `file_open` spike
+    /// affordance. Aiflow picks the path and validates it through `emitFileOpen`; this is a
+    /// user-initiated one-shot, not automatic file following.
+    @discardableResult
+    func openReadmeInCompanion(_ project: SavedProject) -> Bool {
+        let readme = URL(fileURLWithPath: project.path)
+            .appendingPathComponent("README.md").path
+
+        guard FileManager.default.fileExists(atPath: readme) else {
+            notice = "\(project.name) has no README.md to open."
+            return false
+        }
+        guard emitFileOpen(path: readme, in: project) else {
+            notice = "Could not open README.md in \(project.name)."
+            return false
+        }
+        notice = "Asked VS Code to open \(project.name)/README.md."
+        return true
+    }
+}
+
+// MARK: - BridgeController
+
+extension WidgetViewModel: BridgeController {
+    /// The complete current state, so a client that connects or reconnects mid-run can
+    /// rebuild its UI without the run restarting.
+    func bridgeSnapshot() -> BridgeEvent {
+        var event = BridgeEvent(type: .snapshot)
+        event.connected = true
+        event.protocolVersion = BridgeCodec.protocolVersion
+        event.runState = runState.bridgeName
+        event.project = (runningProject ?? runState.confirmingProject)?.name
+        event.model = selectedModelRole
+        event.effort = selectedEffort
+        event.message = lastMessage
+
+        // A snapshot must also carry whatever the run is currently blocked on, or a client
+        // that reconnects while Codex waits would have no way to answer.
+        if let approval = pendingApproval {
+            event.requestId = approval.id
+            event.kind = approval.kind.wireName
+            event.summary = approval.summary
+            event.detail = approval.detail
+        } else if let question = pendingQuestion {
+            event.requestId = question.id
+            event.questions = question.questions.map(BridgeQuestion.init)
+        }
+        return event
+    }
+
+    /// Commands are verbs, never data. Anything that does not match the currently pending
+    /// request is ignored — the view model's state is authoritative, not the client's claim.
+    func handleBridgeCommand(_ command: BridgeCommand) {
+        switch command.type {
+        case .auth:
+            // Authentication is settled by the transport before a command ever reaches the
+            // view model; reaching here means the token was already accepted.
+            break
+
+        case .ping:
+            emit(bridgeSnapshot())
+
+        case .cancel:
+            cancelRun()
+
+        case .approve, .deny:
+            guard let pending = pendingApproval, let claimed = command.requestId,
+                claimed == pending.id
+            else { return }  // stale or mismatched id must not resolve a different request
+            respondToApproval(allow: command.type == .approve)
+
+        case .answerQuestion:
+            guard let pending = pendingQuestion, let claimed = command.requestId,
+                claimed == pending.id, let answers = command.answers
+            else { return }
+            respondToQuestion(answers)
+        }
+    }
+}
+
+extension RunState {
+    /// The project being confirmed, used only for snapshot/file-open scoping.
+    var confirmingProject: SavedProject? {
+        if case .confirming(let project) = self { return project }
+        return nil
     }
 }
 

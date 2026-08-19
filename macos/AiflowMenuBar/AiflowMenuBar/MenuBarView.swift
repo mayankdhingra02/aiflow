@@ -188,6 +188,7 @@ struct MenuBarView: View {
             Divider()
             Button("Rename…") { renaming = project }
             Button("Reveal in Finder") { viewModel.revealInFinder(project) }
+            Button("Open README in VS Code") { viewModel.openReadmeInCompanion(project) }
             Divider()
             Button("Remove", role: .destructive) { removing = project }
         }

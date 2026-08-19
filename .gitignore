@@ -11,3 +11,18 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.build/
+
+# VS Code extension (TypeScript)
+# NOTE: `.vscode/` above is editor settings; `vscode/` is the companion extension source
+# and must stay tracked.
+node_modules/
+vscode/**/out/
+*.vsix
+.vscode-test/
+*.tsbuildinfo
