@@ -125,6 +125,11 @@ class PacketEnvelope(BaseModel):
 
     base_sha: str = Field(pattern=(r"^[0-9a-fA-F]{7,64}$"))
 
+    review_sequence: int | None = Field(
+        default=None,
+        ge=1,
+    )
+
     review_fingerprint: str | None = Field(
         default=None,
         pattern=(r"^[0-9a-fA-F]{64}$"),

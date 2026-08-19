@@ -368,3 +368,53 @@ def test_prepare_review_preserves_existing_codex_summary(
     )
 
     assert existing_summary.read_text(encoding="utf-8") == sentinel
+
+
+def test_review_preparation_uses_immutable_destination_and_sequence(
+    tmp_path: Path,
+) -> None:
+    root = _setup_repository(tmp_path)
+
+    (root / "app.py").write_text(
+        "value = 2\n",
+        encoding="utf-8",
+    )
+
+    task_dir = tmp_path / "task"
+
+    _write_review_artifacts(
+        task_dir=task_dir,
+        implementation_report=("Updated app.py.\n"),
+    )
+
+    project, task = _build_records(
+        root=root,
+        task_dir=task_dir,
+    )
+
+    review_dir = task_dir / "reviews" / "001"
+
+    review_dir.mkdir(
+        parents=True,
+    )
+
+    artifacts = prepare_review_artifacts(
+        project=project,
+        task=task,
+        review_artifact_dir=(review_dir),
+        review_sequence=1,
+    )
+
+    assert artifacts.prompt_path == review_dir / "review-prompt.md"
+
+    assert artifacts.evidence_path == review_dir / "review-evidence.md"
+
+    assert artifacts.fingerprint_path == review_dir / "review-fingerprint.txt"
+
+    prompt = artifacts.prompt_path.read_text(encoding="utf-8")
+
+    assert '"review_sequence": 1' in prompt
+
+    assert artifacts.review_fingerprint in prompt
+
+    assert (task_dir / "review-prompt.md").exists() is False

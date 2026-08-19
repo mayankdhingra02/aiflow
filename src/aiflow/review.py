@@ -8,6 +8,7 @@ from pathlib import Path
 from aiflow.codex_events import (
     write_codex_event_summary,
 )
+from aiflow.errors import StateError
 from aiflow.git import run_git
 from aiflow.models import (
     ProjectRecord,
@@ -89,6 +90,8 @@ class ReviewArtifacts:
     prompt_path: Path
     evidence_path: Path
     codex_summary_path: Path
+    fingerprint_path: Path
+    review_fingerprint: str
 
 
 def _contains_credential_like_content(
@@ -221,7 +224,6 @@ def _read_limited_text(
         return "[Aiflow: binary file omitted]"
 
     truncated = len(data) > limit
-
     data = data[:limit]
 
     try:
@@ -322,7 +324,6 @@ def compute_worktree_fingerprint(
                 digest.update(str(target).encode())
 
             digest.update(b"\0")
-
             continue
 
         try:
@@ -335,12 +336,10 @@ def compute_worktree_fingerprint(
             ValueError,
         ):
             digest.update(b"<UNSAFE_PATH>\0")
-
             continue
 
         if not resolved.is_file():
             digest.update(b"<NON_REGULAR>\0")
-
             continue
 
         try:
@@ -413,7 +412,6 @@ def collect_git_review_evidence(
 
     omitted_files: list[str] = []
     sections: list[str] = []
-
     current_size = 0
 
     for path in changed_files:
@@ -429,7 +427,6 @@ def collect_git_review_evidence(
                 "may contain sensitive "
                 "material.]"
             )
-
             continue
 
         diff = run_git(
@@ -455,7 +452,6 @@ def collect_git_review_evidence(
                 "credential-like material "
                 "was detected.]"
             )
-
             continue
 
         if len(diff) > MAX_DIFF_PER_FILE:
@@ -492,7 +488,6 @@ def collect_git_review_evidence(
                 "may contain sensitive "
                 "material.]"
             )
-
             continue
 
         text = _safe_untracked_text(
@@ -506,7 +501,6 @@ def collect_git_review_evidence(
             sections.append(
                 f"### {display_path} (untracked)\n[Aiflow omitted this non-regular or unsafe file.]"
             )
-
             continue
 
         if _contains_credential_like_content(text):
@@ -520,7 +514,6 @@ def collect_git_review_evidence(
                 "credential-like material "
                 "was detected.]"
             )
-
             continue
 
         section = f"### {display_path} (untracked)\n<aiflow_new_file>\n{text}\n</aiflow_new_file>"
@@ -565,6 +558,8 @@ def prepare_review_artifacts(
     project: ProjectRecord,
     task: TaskRecord,
     implementation_artifact_dir: (Path | None) = None,
+    review_artifact_dir: (Path | None) = None,
+    review_sequence: (int | None) = None,
 ) -> ReviewArtifacts:
     task.task_dir.mkdir(
         parents=True,
@@ -573,9 +568,32 @@ def prepare_review_artifacts(
 
     source_artifact_dir = implementation_artifact_dir or task.task_dir
 
-    worktree_fingerprint = compute_worktree_fingerprint(project.path)
+    destination_dir = review_artifact_dir or task.task_dir
 
-    fingerprint_path = task.task_dir / "review-fingerprint.txt"
+    destination_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fingerprint_path = destination_dir / "review-fingerprint.txt"
+
+    evidence_path = destination_dir / "review-evidence.md"
+
+    prompt_path = destination_dir / "review-prompt.md"
+
+    if review_artifact_dir is not None and any(
+        path.exists()
+        for path in (
+            fingerprint_path,
+            evidence_path,
+            prompt_path,
+        )
+    ):
+        raise StateError(
+            f"immutable review preparation already contains artifacts: {destination_dir}"
+        )
+
+    worktree_fingerprint = compute_worktree_fingerprint(project.path)
 
     fingerprint_path.write_text(
         worktree_fingerprint + "\n",
@@ -593,8 +611,6 @@ def prepare_review_artifacts(
         )
 
     evidence = collect_git_review_evidence(project.path)
-
-    evidence_path = task.task_dir / "review-evidence.md"
 
     omitted = (
         "\n".join("- " + _safe_display_path(path) for path in evidence.omitted_files) or "None"
@@ -674,6 +690,7 @@ def prepare_review_artifacts(
     prompt = build_review_prompt(
         project=project,
         task=task,
+        review_sequence=(review_sequence),
         review_fingerprint=(worktree_fingerprint),
         plan_body=plan_body,
         implementation_report=(implementation_report),
@@ -687,8 +704,6 @@ def prepare_review_artifacts(
         root=project.path,
     )
 
-    prompt_path = task.task_dir / "review-prompt.md"
-
     prompt_path.write_text(
         prompt,
         encoding="utf-8",
@@ -698,4 +713,6 @@ def prepare_review_artifacts(
         prompt_path=prompt_path,
         evidence_path=evidence_path,
         codex_summary_path=(codex_summary_path),
+        fingerprint_path=(fingerprint_path),
+        review_fingerprint=(worktree_fingerprint),
     )
