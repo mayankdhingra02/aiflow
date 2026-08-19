@@ -10,6 +10,8 @@ enum CodexSessionEvent: Equatable {
     /// Codex confirmed it finished handling the server request with this exact id.
     case requestResolved(CodexRequestID)
     case assistantMessage(String)
+    /// A non-terminal error Codex said it will retry — the session stays open.
+    case retrying(String)
     case finished
     case cancelled
     case failed(String)
@@ -48,10 +50,10 @@ enum CodexProtocol {
                 // The typed response represents denial as an empty granted profile.
                 profile = [String: Any]()
             }
-            return ["jsonrpc": "2.0", "id": request.id.jsonValue,
+            return ["id": request.id.jsonValue,
                     "result": ["permissions": profile, "scope": "turn"]]
         }
-        return ["jsonrpc": "2.0", "id": request.id.jsonValue,
+        return ["id": request.id.jsonValue,
                 "result": ["decision": allow ? "accept" : "decline"]]
     }
 
@@ -66,7 +68,7 @@ enum CodexProtocol {
             payload[question.id] = ["answers": [answer]]
         }
         return [
-            "jsonrpc": "2.0", "id": request.id.jsonValue,
+            "id": request.id.jsonValue,
             "result": ["answers": payload],
         ]
     }
@@ -111,7 +113,7 @@ enum CodexProtocol {
 
     /// Sent after the initialize response and before any other request.
     static func initializedNotification() -> [String: Any] {
-        ["jsonrpc": "2.0", "method": "initialized", "params": [:]]
+        ["method": "initialized", "params": [:]]
     }
 
     static func interruptParams(threadId: String, turnId: String) -> [String: Any] {
@@ -202,13 +204,15 @@ enum CodexProtocol {
             return .requestResolved(id)
 
         case "error":
-            // ErrorNotification nests the message under `error` (TurnError.message).
+            // ErrorNotification nests the message under `error` (TurnError.message) and
+            // says whether Codex intends to retry. A retryable error is not terminal.
             let nested = params["error"] as? [String: Any]
             let message =
                 (nested?["message"] as? String)
                 ?? (params["message"] as? String)
                 ?? "Codex reported an error"
-            return .failed(message)
+            let willRetry = params["willRetry"] as? Bool ?? false
+            return willRetry ? .retrying(message) : .failed(message)
 
         case "item/completed":
             // Surface only the assistant's own message; ignore command/reasoning items.
@@ -375,7 +379,7 @@ actor CodexAppServerClient {
         //   -> (response carries threadId) -> turn/start
         initializeRequestId = takeRequestId()
         send([
-            "jsonrpc": "2.0", "id": initializeRequestId!, "method": "initialize",
+            "id": initializeRequestId!, "method": "initialize",
             "params": CodexProtocol.initializeParams(),
         ])
     }
@@ -400,7 +404,7 @@ actor CodexAppServerClient {
 
                 threadStartRequestId = takeRequestId()
                 send([
-                    "jsonrpc": "2.0", "id": threadStartRequestId!, "method": "thread/start",
+                    "id": threadStartRequestId!, "method": "thread/start",
                     "params": CodexProtocol.threadStartParams(
                         repositoryPath: pending.repositoryPath, modelId: pending.modelId),
                 ])
@@ -415,7 +419,7 @@ actor CodexAppServerClient {
                 activeThreadId = threadId
                 turnStartRequestId = takeRequestId()
                 send([
-                    "jsonrpc": "2.0", "id": turnStartRequestId!, "method": "turn/start",
+                    "id": turnStartRequestId!, "method": "turn/start",
                     "params": CodexProtocol.turnStartParams(
                         threadId: threadId,
                         repositoryPath: pending.repositoryPath,
@@ -457,15 +461,20 @@ actor CodexAppServerClient {
     /// The process is only terminated if the server stops responding, and only ever this
     /// session's own child process.
     func cancel(terminateAfter: Duration = .seconds(5)) {
-        guard let threadId = activeThreadId, let turnId = activeTurnId else {
-            // Nothing was started yet, so there is no turn to wind down.
+        guard let threadId = activeThreadId, !threadId.isEmpty,
+            let turnId = activeTurnId, !turnId.isEmpty
+        else {
+            // No turn is in flight, so there is nothing to wind down. Report the
+            // cancellation immediately so the UI is not left waiting.
+            let onEvent = pending?.onEvent
             terminateOwnProcess()
             stop()
+            onEvent?(.cancelled)
             return
         }
 
         send([
-            "jsonrpc": "2.0", "id": takeRequestId(), "method": "turn/interrupt",
+            "id": takeRequestId(), "method": "turn/interrupt",
             "params": CodexProtocol.interruptParams(threadId: threadId, turnId: turnId),
         ])
 
@@ -476,11 +485,14 @@ actor CodexAppServerClient {
         }
     }
 
+    /// Bounded fallback. Fires only if the session is still open, i.e. the server never
+    /// confirmed the interrupt.
     private func terminateIfStillRunning() {
-        guard process != nil else { return }
+        guard pending != nil else { return }  // the server already wound the turn down
+        let onEvent = pending?.onEvent
         terminateOwnProcess()
-        pending?.onEvent(.cancelled)
         stop()
+        onEvent?(.cancelled)
     }
 
     private func terminateOwnProcess() {
@@ -507,12 +519,39 @@ actor CodexAppServerClient {
     }
 
     private func send(_ object: [String: Any]) {
+        if let outboundRecorder {
+            outboundRecorder(object)
+            return
+        }
         guard let handle = stdinHandle,
             let data = try? JSONSerialization.data(withJSONObject: object)
         else { return }
         handle.write(data)
         handle.write(Data("\n".utf8))
     }
+
+    // MARK: - Test seam
+    //
+    // Lets the cancellation and wire-format tests drive a session without spawning Codex.
+    private var outboundRecorder: (([String: Any]) -> Void)?
+
+    /// Puts the client into the state it would be in mid-turn, recording outbound messages.
+    func configureForTesting(
+        threadId: String,
+        turnId: String,
+        onSend: @escaping ([String: Any]) -> Void,
+        onEvent: @escaping @Sendable (CodexSessionEvent) -> Void
+    ) {
+        outboundRecorder = onSend
+        activeThreadId = threadId
+        activeTurnId = turnId
+        pending = PendingRun(
+            prompt: "", repositoryPath: "/repo", modelId: "m", reasoningEffort: "low",
+            onEvent: onEvent)
+    }
+
+    /// True while a session is still open (nothing has stopped or released it).
+    var isSessionActive: Bool { pending != nil }
 }
 
 /// Accumulates piped bytes and yields complete newline-delimited lines.

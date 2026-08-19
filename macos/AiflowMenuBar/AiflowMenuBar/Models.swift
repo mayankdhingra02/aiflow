@@ -149,6 +149,8 @@ enum RunState: Equatable {
     case waitingForInput(UserQuestion)
     /// The user answered, but Codex has not yet confirmed it resolved that exact request.
     case respondingToRequest(CodexRequestID)
+    /// Interrupt sent; waiting for Codex to wind the turn down before releasing the session.
+    case cancelling(SavedProject)
     case completed(SavedProject)
     case cancelled(SavedProject)
     case failed(project: SavedProject?, message: String)
@@ -156,7 +158,8 @@ enum RunState: Equatable {
     /// True once a run has started and has not yet finished — blocks starting a second run.
     var isBusy: Bool {
         switch self {
-        case .launching, .running, .waitingForApproval, .waitingForInput, .respondingToRequest:
+        case .launching, .running, .waitingForApproval, .waitingForInput, .respondingToRequest,
+            .cancelling:
             return true
         case .ready, .confirming, .completed, .cancelled, .failed:
             return false
@@ -182,6 +185,7 @@ enum RunState: Equatable {
         case .waitingForApproval: return "Waiting for your approval"
         case .waitingForInput: return "Codex asked a question"
         case .respondingToRequest: return "Sending your answer…"
+        case .cancelling: return "Cancelling…"
         case .completed: return "✓ Codex finished"
         case .cancelled: return "Run cancelled"
         case .failed(_, let detail): return "✕ \(detail)"

@@ -101,7 +101,8 @@ final class WidgetViewModel: ObservableObject {
     var menuBarSymbolName: String {
         switch runState {
         case .ready, .confirming: return "bolt.horizontal.circle"
-        case .launching, .running, .respondingToRequest: return "bolt.horizontal.circle.fill"
+        case .launching, .running, .respondingToRequest, .cancelling:
+            return "bolt.horizontal.circle.fill"
         case .waitingForApproval, .waitingForInput: return "exclamationmark.circle.fill"
         case .completed: return "checkmark.circle.fill"
         case .cancelled: return "bolt.horizontal.circle"
@@ -318,7 +319,15 @@ final class WidgetViewModel: ObservableObject {
             runState = .cancelled(project)
             finishSession()
 
+        case .retrying(let detail):
+            // Not terminal: Codex said it will retry, so the session stays open and the run
+            // stays busy. Only the note changes.
+            notice = "Codex hit a temporary error and is retrying… (\(detail))"
+
         case .failed(let detail):
+            // A failure arriving while the turn is being interrupted must not overwrite the
+            // cancellation; the run is already on its way to `.cancelled`.
+            if case .cancelling = runState { return }
             runState = .failed(project: project, message: detail)
             if !isPopoverVisible && notificationsAvailable { notifications.sendFailure(for: project) }
             finishSession()
@@ -353,19 +362,16 @@ final class WidgetViewModel: ObservableObject {
         Task { await client?.respondToInput(request, answers: trimmed) }
     }
 
+    /// Asks Codex to wind the turn down and waits for it. The session is deliberately kept
+    /// alive here: the run is only `.cancelled` once the client reports the turn actually
+    /// ended (`turn/completed` with `interrupted`, or the client's bounded fallback).
     func cancelRun() {
-        guard let project = runningProject else { return }
+        guard let project = runningProject, runState.isBusy else { return }
         if let request = pendingApproval { notifications.removePendingRequest(id: request.id) }
         if let question = pendingQuestion { notifications.removePendingRequest(id: question.id) }
-        runState = .cancelled(project)
-        let cancelling = client
-        client = nil
-        runningProject = nil
-        // Let the client wind the turn down by its exact ids, then release it.
-        Task {
-            await cancelling?.cancel()
-            await cancelling?.stop()
-        }
+
+        runState = .cancelling(project)
+        Task { await client?.cancel() }
     }
 
     private func finishSession() {

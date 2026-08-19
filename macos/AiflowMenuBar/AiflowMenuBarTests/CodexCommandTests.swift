@@ -100,6 +100,79 @@ final class CodexSessionParameterTests: XCTestCase {
         XCTAssertEqual(params.keys.sorted(), ["threadId", "turnId"])
     }
 
+    // MARK: - Wire format
+    //
+    // The app-server protocol omits the JSON-RPC envelope field; messages carry only
+    // method/id/params (requests), method/params (notifications), or id/result (responses).
+
+    func testInitializedNotificationOmitsJsonrpc() {
+        XCTAssertNil(CodexProtocol.initializedNotification()["jsonrpc"])
+    }
+
+    func testApprovalResponseOmitsJsonrpcAndCarriesOnlyIdAndResult() {
+        let request = ApprovalRequest(
+            id: .integer(7), kind: .commandExecution, summary: "npm i", detail: nil,
+            projectName: "p", permissionProfile: nil)
+        let response = CodexProtocol.approvalResponse(request, allow: true)
+
+        XCTAssertNil(response?["jsonrpc"])
+        XCTAssertEqual(response?.keys.sorted(), ["id", "result"])
+    }
+
+    func testPermissionResponseOmitsJsonrpc() {
+        let request = ApprovalRequest(
+            id: .integer(8), kind: .permissions, summary: "network", detail: nil,
+            projectName: "p", permissionProfile: nil)
+        let response = CodexProtocol.approvalResponse(request, allow: false)
+
+        XCTAssertNil(response?["jsonrpc"])
+        XCTAssertEqual(response?.keys.sorted(), ["id", "result"])
+    }
+
+    func testUserInputResponseOmitsJsonrpc() {
+        let request = UserQuestion(
+            id: .integer(9),
+            questions: [
+                QuestionItem(
+                    id: "q1", header: "", question: "?", options: [], isOther: false,
+                    isSecret: false)
+            ],
+            projectName: "p")
+        let response = CodexProtocol.userInputResponse(request, answers: ["q1": "a"])
+
+        XCTAssertNil(response["jsonrpc"])
+        XCTAssertEqual(response.keys.sorted(), ["id", "result"])
+    }
+
+    /// Every message the client actually puts on the wire during a session.
+    func testNoOutboundMessageEverIncludesJsonrpc() async {
+        let recorder = OutboundRecorder()
+        let client = CodexAppServerClient()
+        await client.configureForTesting(
+            threadId: "t", turnId: "u", onSend: { recorder.record($0) }, onEvent: { _ in })
+
+        await client.cancel(terminateAfter: .seconds(60))
+        await client.respondToApproval(
+            ApprovalRequest(
+                id: .integer(1), kind: .commandExecution, summary: "s", detail: nil,
+                projectName: "p", permissionProfile: nil), allow: true)
+        await client.respondToInput(
+            UserQuestion(
+                id: .integer(2),
+                questions: [
+                    QuestionItem(
+                        id: "q", header: "", question: "?", options: [], isOther: false,
+                        isSecret: false)
+                ], projectName: "p"), answers: ["q": "a"])
+
+        let sent = recorder.messages
+        XCTAssertFalse(sent.isEmpty)
+        for message in sent {
+            XCTAssertNil(message["jsonrpc"], "outbound message must not carry a jsonrpc field")
+        }
+    }
+
+
     func testNeverUsesDangerFullAccess() {
         XCTAssertNotEqual(CodexProtocol.sandbox, "danger-full-access")
         XCTAssertFalse(describe(threadParams()).contains("danger"))
@@ -193,5 +266,104 @@ final class CodexLocatorTests: XCTestCase {
 
     func testDoesNotHardcodeADerivedDataPath() {
         XCTAssertFalse(CodexLocator.knownPaths.contains { $0.contains("DerivedData") })
+    }
+}
+
+/// Collects outbound messages from the client's test seam.
+final class OutboundRecorder: @unchecked Sendable {
+    private var storage: [[String: Any]] = []
+    private let lock = NSLock()
+
+    func record(_ message: [String: Any]) {
+        lock.lock()
+        storage.append(message)
+        lock.unlock()
+    }
+
+    var messages: [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+/// The client must keep the session open after sending the interrupt, so the server has a
+/// chance to confirm; only the bounded fallback ends it early.
+final class CodexCancellationTests: XCTestCase {
+    private func makeClient(
+        recorder: OutboundRecorder,
+        events: @escaping @Sendable (CodexSessionEvent) -> Void = { _ in }
+    ) async -> CodexAppServerClient {
+        let client = CodexAppServerClient()
+        await client.configureForTesting(
+            threadId: "thread-abc", turnId: "turn-xyz", onSend: { recorder.record($0) },
+            onEvent: events)
+        return client
+    }
+
+    func testCancelSendsInterruptWithTheExactIds() async {
+        let recorder = OutboundRecorder()
+        let client = await makeClient(recorder: recorder)
+
+        await client.cancel(terminateAfter: .seconds(60))
+
+        let interrupt = recorder.messages.first { $0["method"] as? String == "turn/interrupt" }
+        XCTAssertNotNil(interrupt, "cancel must send turn/interrupt")
+        let params = interrupt?["params"] as? [String: Any]
+        XCTAssertEqual(params?["threadId"] as? String, "thread-abc")
+        XCTAssertEqual(params?["turnId"] as? String, "turn-xyz")
+    }
+
+    func testClientStaysAliveWhileWaitingForConfirmation() async {
+        let recorder = OutboundRecorder()
+        let client = await makeClient(recorder: recorder)
+
+        await client.cancel(terminateAfter: .seconds(60))
+
+        let active = await client.isSessionActive
+        XCTAssertTrue(active, "the session must survive until the turn is confirmed ended")
+    }
+
+    func testBoundedFallbackCancelsWhenTheServerNeverConfirms() async {
+        let recorder = OutboundRecorder()
+        let received = EventRecorder()
+        let client = await makeClient(recorder: recorder, events: { received.record($0) })
+
+        await client.cancel(terminateAfter: .milliseconds(50))
+
+        try? await Task.sleep(for: .milliseconds(400))
+
+        XCTAssertTrue(received.events.contains(.cancelled), "fallback must report cancellation")
+        let active = await client.isSessionActive
+        XCTAssertFalse(active, "the session must be released after the fallback fires")
+    }
+
+    func testCancelWithNoActiveTurnReportsCancellationImmediately() async {
+        let received = EventRecorder()
+        let client = CodexAppServerClient()
+        // A session that never got as far as starting a turn has no ids to interrupt.
+        await client.configureForTesting(
+            threadId: "", turnId: "", onSend: { _ in }, onEvent: { received.record($0) })
+
+        await client.cancel(terminateAfter: .seconds(60))
+
+        XCTAssertTrue(received.events.contains(.cancelled))
+    }
+}
+
+final class EventRecorder: @unchecked Sendable {
+    private var storage: [CodexSessionEvent] = []
+    private let lock = NSLock()
+
+    func record(_ event: CodexSessionEvent) {
+        lock.lock()
+        storage.append(event)
+        lock.unlock()
+    }
+
+    var events: [CodexSessionEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

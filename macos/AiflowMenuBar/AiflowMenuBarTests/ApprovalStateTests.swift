@@ -223,6 +223,23 @@ final class CodexProtocolTests: XCTestCase {
             .failed("stream disconnected"))
     }
 
+    /// `willRetry` marks the error as non-terminal: Codex intends to keep going.
+    func testRetryableErrorIsNotTerminalAndKeepsTheMessage() {
+        XCTAssertEqual(
+            decode(
+                """
+                {"method":"error","params":{"threadId":"t","turnId":"u","willRetry":true,
+                 "error":{"message":"stream disconnected"}}}
+                """),
+            .retrying("stream disconnected"))
+    }
+
+    func testErrorWithoutWillRetryIsTreatedAsTerminal() {
+        XCTAssertEqual(
+            decode(#"{"method":"error","params":{"error":{"message":"boom"}}}"#),
+            .failed("boom"))
+    }
+
     func testErrorWithoutAMessageStillFails() {
         guard case .failed = decode(#"{"method":"error","params":{"error":{}}}"#) else {
             return XCTFail("expected a failure event")
@@ -661,17 +678,79 @@ final class ApprovalStateTests: XCTestCase {
         XCTAssertTrue(notifications.failures.isEmpty)
     }
 
-    func testCancellationEntersCancelledAndDropsLateEvents() {
+    // MARK: - Graceful cancellation
+
+    /// Cancelling asks Codex to wind the turn down; the run is not cancelled until Codex
+    /// (or the client's bounded fallback) confirms the turn actually ended.
+    func testCancelEntersCancellingAndWaitsForConfirmation() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.cancelRun()
+
+        XCTAssertEqual(viewModel.runState, .cancelling(project))
+        XCTAssertTrue(
+            viewModel.runState.isBusy,
+            "the session is still winding down, so a second run must stay blocked")
+    }
+
+    func testInterruptedConfirmationCompletesTheCancellation() {
         let viewModel = makeViewModel()
         viewModel.enterRunningForTesting(project)
         viewModel.cancelRun()
 
+        // This is what turn/completed(status: interrupted) decodes to.
+        viewModel.handleEventForTesting(.cancelled, project: project)
+
         XCTAssertEqual(viewModel.runState, .cancelled(project))
         XCTAssertFalse(viewModel.runState.isBusy, "a cancelled run must not block the next one")
+    }
 
-        // Late output from the winding-down process must not overwrite the cancelled state.
-        viewModel.handleEventForTesting(.failed("late"), project: project)
+    /// A failure arriving while the interrupt is in flight must not replace the cancellation.
+    func testLateFailureCannotReplaceCancellation() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.cancelRun()
 
+        viewModel.handleEventForTesting(.failed("stream closed"), project: project)
+        XCTAssertEqual(viewModel.runState, .cancelling(project))
+
+        viewModel.handleEventForTesting(.cancelled, project: project)
         XCTAssertEqual(viewModel.runState, .cancelled(project))
+
+        // And once cancelled, later output is dropped entirely.
+        viewModel.handleEventForTesting(.failed("later still"), project: project)
+        XCTAssertEqual(viewModel.runState, .cancelled(project))
+    }
+
+    func testCancelIsIgnoredWhenNoRunIsActive() {
+        let viewModel = makeViewModel()
+
+        viewModel.cancelRun()
+
+        XCTAssertEqual(viewModel.runState, .ready)
+    }
+
+    // MARK: - Retryable errors are not terminal
+
+    func testRetryableErrorDoesNotFailTheRunAndKeepsItBusy() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(.retrying("stream disconnected"), project: project)
+
+        XCTAssertEqual(viewModel.runState, .running(project))
+        XCTAssertTrue(viewModel.runState.isBusy)
+        XCTAssertTrue(viewModel.notice.contains("retrying"))
+    }
+
+    func testNonRetryableErrorFailsTheRun() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(.failed("model overloaded"), project: project)
+
+        XCTAssertEqual(viewModel.runState, .failed(project: project, message: "model overloaded"))
+        XCTAssertFalse(viewModel.runState.isBusy)
     }
 }
