@@ -1,4 +1,7 @@
 import * as net from 'net';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { EventEmitter } from 'events';
 import {
     BRIDGE_HOST,
@@ -7,9 +10,22 @@ import {
     BridgeEvent,
     LineBuffer,
     RequestId,
+    TOKEN_RELATIVE_PATH,
     encodeCommand,
     parseEvent
 } from './protocol';
+
+/** Reads the bridge token Aiflow wrote. Returns undefined if Aiflow has not run yet. */
+export function readBridgeToken(tokenPath = path.join(os.homedir(), TOKEN_RELATIVE_PATH)):
+    | string
+    | undefined {
+    try {
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        return token.length > 0 ? token : undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 export interface BridgeClientOptions {
     host?: string;
@@ -18,6 +34,8 @@ export interface BridgeClientOptions {
     retryDelaysMs?: number[];
     /** Injectable for tests so no real socket is opened. */
     createSocket?: () => net.Socket;
+    /** Injectable for tests; defaults to reading Aiflow's token file. */
+    readToken?: () => string | undefined;
 }
 
 /**
@@ -34,6 +52,7 @@ export class BridgeClient extends EventEmitter {
     private readonly port: number;
     private readonly retryDelays: number[];
     private readonly createSocket: () => net.Socket;
+    private readonly readToken: () => string | undefined;
 
     private retryIndex = 0;
     private reconnectTimer: NodeJS.Timeout | undefined;
@@ -46,6 +65,7 @@ export class BridgeClient extends EventEmitter {
         this.port = options.port ?? BRIDGE_PORT;
         this.retryDelays = options.retryDelaysMs ?? [500, 1000, 2000, 5000, 10000];
         this.createSocket = options.createSocket ?? (() => new net.Socket());
+        this.readToken = options.readToken ?? (() => readBridgeToken());
     }
 
     get isConnected(): boolean {
@@ -66,11 +86,27 @@ export class BridgeClient extends EventEmitter {
             this.connected = true;
             this.retryIndex = 0;
             this.buffer.reset();
+
+            // Aiflow sends nothing but `hello` until the companion proves itself, so
+            // authenticate immediately — including after every reconnect.
+            const token = this.readToken();
+            if (token) {
+                socket.write(encodeCommand({ type: 'auth', token }));
+            } else {
+                this.emit('authFailed');
+            }
+
             this.emit('connected');
         });
 
         socket.on('data', (chunk: string | Buffer) => {
-            for (const line of this.buffer.append(chunk.toString())) {
+            const lines = this.buffer.append(chunk.toString());
+            if (lines === null) {
+                // Oversized frame: drop the connection rather than buffering without bound.
+                socket.destroy();
+                return;
+            }
+            for (const line of lines) {
                 const event = parseEvent(line);
                 // Malformed or unknown lines are dropped rather than guessed at.
                 if (event) {

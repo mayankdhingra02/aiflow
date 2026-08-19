@@ -12,8 +12,14 @@ The current loop is:
 ChatGPT Web → Aiflow orchestration → Codex → Aiflow → ChatGPT Web → repeat
 ```
 
-The clipboard is the bridge between ChatGPT Web and Aiflow. Browser automation and DOM
-scraping are not part of the product.
+The clipboard is the **current** ChatGPT Web handoff — the mechanism as it stands today, not
+a permanent design commitment. Browser/ChatGPT automation is **not implemented and out of
+scope for the VS Code companion phase**; a future phase may automate that handoff (for example
+through a ChatGPT Web integration, a browser extension, or MCP). Until such a phase lands, do
+not add browser automation or DOM scraping.
+
+Whatever carries the handoff, the long-term product stays the same: an orchestration layer
+between ChatGPT-side planning and local implementation and execution.
 
 ## Surfaces
 
@@ -60,8 +66,16 @@ Aiflow has three surfaces. Only the first two execute anything.
 - The companion must never launch a second Codex process or session.
 - It mirrors and controls the single Aiflow-owned session only.
 - The bridge listens on `127.0.0.1` only — never `0.0.0.0` or a LAN interface.
+- Loopback is not an authorization boundary. A connection must authenticate with the local
+  bridge token before Aiflow sends any run state or honours any command; an unauthenticated
+  socket sees only a version greeting. The token lives in Aiflow's Application Support
+  directory with `0600` permissions and must never be logged, displayed, placed in an event,
+  committed, or written into a test fixture or README example.
+- Authentication is per connection and is not inherited by a reconnect.
 - The bridge accepts only typed, recognized commands. It never accepts repository paths,
   sandbox values, model IDs, prompts, or shell commands from the client.
+- Bridge frames are bounded; an oversized frame drops the connection rather than growing a
+  buffer without limit.
 - A client-supplied request ID may only resolve the request that is currently pending; the
   macOS `WidgetViewModel` state is authoritative.
 - Losing the VS Code connection must never affect a running Codex session.

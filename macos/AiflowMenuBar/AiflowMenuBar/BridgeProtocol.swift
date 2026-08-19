@@ -24,6 +24,8 @@ enum BridgeEventType: String, Codable {
 }
 
 enum BridgeCommandType: String, Codable {
+    /// Must succeed before any other command is honoured or any run state is sent.
+    case auth
     case ping
     case cancel
     case approve
@@ -99,12 +101,17 @@ struct BridgeCommand: Codable, Equatable {
     let type: BridgeCommandType
     var requestId: CodexRequestID?
     var answers: [String: String]?
+    /// Only ever read from an `auth` command. Never echoed back and never logged.
+    var token: String?
 
-    init(type: BridgeCommandType, requestId: CodexRequestID? = nil, answers: [String: String]? = nil)
-    {
+    init(
+        type: BridgeCommandType, requestId: CodexRequestID? = nil,
+        answers: [String: String]? = nil, token: String? = nil
+    ) {
         self.type = type
         self.requestId = requestId
         self.answers = answers
+        self.token = token
     }
 }
 
@@ -131,6 +138,50 @@ extension CodexRequestID: Codable {
         case .integer(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         }
+    }
+}
+
+/// Accumulates bridge bytes into newline-delimited lines with a hard ceiling.
+///
+/// Deliberately separate from the `LineBuffer` used for the Codex App Server: Codex frames
+/// carry whole agent messages and diffs, while bridge commands are tiny. A local client that
+/// streams megabytes without a newline is misbehaving, so the connection is dropped rather
+/// than buffered indefinitely.
+final class BoundedLineBuffer {
+    /// Bridge commands are verbs plus short answers; 64 KiB is far more than any legitimate one.
+    static let maxFrameBytes = 64 * 1024
+
+    private var pending = Data()
+    private let limit: Int
+    private(set) var didOverflow = false
+
+    init(limit: Int = BoundedLineBuffer.maxFrameBytes) {
+        self.limit = limit
+    }
+
+    /// Returns completed lines, or nil once the limit is exceeded — the caller must then
+    /// close the connection.
+    func append(_ data: Data) -> [String]? {
+        guard !didOverflow else { return nil }
+
+        pending.append(data)
+
+        var lines: [String] = []
+        while let newlineIndex = pending.firstIndex(of: UInt8(ascii: "\n")) {
+            let lineData = pending[pending.startIndex..<newlineIndex]
+            pending = pending[pending.index(after: newlineIndex)...]
+            let line = String(decoding: lineData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { lines.append(line) }
+        }
+
+        // Whatever is left has no newline yet; if it is already over the limit it never will be.
+        if pending.count > limit {
+            didOverflow = true
+            pending = Data()
+            return nil
+        }
+        return lines
     }
 }
 

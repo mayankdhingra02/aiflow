@@ -11,6 +11,14 @@ export const BRIDGE_HOST = '127.0.0.1';
 export const BRIDGE_PORT = 47321;
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * Where Aiflow keeps the bridge token, relative to the user's home directory. Loopback is
+ * not an authorization boundary — any local process could otherwise read the pending
+ * approval's request id and answer it — so the companion proves itself with this shared
+ * secret before Aiflow sends any run state.
+ */
+export const TOKEN_RELATIVE_PATH = 'Library/Application Support/Aiflow/bridge-token';
+
 export type BridgeEventType =
     | 'hello'
     | 'snapshot'
@@ -25,7 +33,13 @@ export type BridgeEventType =
     | 'file_open'
     | 'file_changed';
 
-export type BridgeCommandType = 'ping' | 'cancel' | 'approve' | 'deny' | 'answer_question';
+export type BridgeCommandType =
+    | 'auth'
+    | 'ping'
+    | 'cancel'
+    | 'approve'
+    | 'deny'
+    | 'answer_question';
 
 /** A JSON-RPC request id is an integer or a string; both must round-trip exactly. */
 export type RequestId = number | string;
@@ -66,6 +80,8 @@ export interface BridgeCommand {
     type: BridgeCommandType;
     requestId?: RequestId;
     answers?: Record<string, string>;
+    /** Only ever set on an `auth` command. Never logged or surfaced in the UI. */
+    token?: string;
 }
 
 const EVENT_TYPES: ReadonlySet<string> = new Set<BridgeEventType>([
@@ -110,19 +126,50 @@ export function encodeCommand(command: BridgeCommand): string {
     return JSON.stringify(command) + '\n';
 }
 
-/** Accumulates socket chunks and yields complete newline-delimited lines. */
+/**
+ * The largest inbound frame this client will buffer. Events can legitimately carry a whole
+ * agent message, so this is far larger than the 64 KiB ceiling Aiflow applies to inbound
+ * commands, which are only ever verbs plus short answers.
+ */
+export const MAX_FRAME_BYTES = 1024 * 1024;
+
+/**
+ * Accumulates socket chunks and yields complete newline-delimited lines, with a hard ceiling
+ * on how much may accumulate without a newline.
+ */
 export class LineBuffer {
     private pending = '';
+    private overflowed = false;
 
-    append(chunk: string): string[] {
+    constructor(private readonly limit: number = MAX_FRAME_BYTES) {}
+
+    get didOverflow(): boolean {
+        return this.overflowed;
+    }
+
+    /** Returns completed lines, or null once the limit is exceeded. */
+    append(chunk: string): string[] | null {
+        if (this.overflowed) {
+            return null;
+        }
+
         this.pending += chunk;
         const parts = this.pending.split('\n');
         this.pending = parts.pop() ?? '';
+
+        // Whatever remains has no newline yet; past the limit it never will.
+        if (Buffer.byteLength(this.pending, 'utf8') > this.limit) {
+            this.overflowed = true;
+            this.pending = '';
+            return null;
+        }
+
         return parts.map((part) => part.trim()).filter((part) => part.length > 0);
     }
 
     reset(): void {
         this.pending = '';
+        this.overflowed = false;
     }
 }
 

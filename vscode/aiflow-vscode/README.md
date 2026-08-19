@@ -42,6 +42,14 @@ newer request.
 ## Safety boundaries
 
 - Connects only to `127.0.0.1:47321`.
+- **Authenticates before anything else.** Loopback alone is not an authorization boundary, so
+  the extension reads Aiflow's local token from
+  `~/Library/Application Support/Aiflow/bridge-token` and sends it as an `auth` command the
+  moment the socket opens — including after every reconnect. Until that succeeds Aiflow sends
+  no run state and accepts no commands. If the token file is missing (Aiflow has never run),
+  the extension says so and stays idle rather than retrying blindly. The token is never
+  logged or shown.
+- Inbound frames are capped at 1 MiB; an oversized frame drops the connection.
 - Outbound commands carry a verb, an optional request id, and answers — there is no field for
   a repository path, sandbox, model, prompt, or shell command.
 - `file_open` paths are validated against the active saved repository **on the Aiflow side**

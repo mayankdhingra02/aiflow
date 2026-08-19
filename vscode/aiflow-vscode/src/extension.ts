@@ -44,6 +44,13 @@ export function activate(context: vscode.ExtensionContext): void {
         render();
     });
 
+    client.on('authFailed', () => {
+        // No token file yet, so Aiflow will send nothing beyond its greeting.
+        void vscode.window.showWarningMessage(
+            'Aiflow: no bridge token found. Start the Aiflow menu-bar app, then run "Aiflow: Reconnect".'
+        );
+    });
+
     client.on('disconnected', () => {
         // The run keeps going in Aiflow; only this viewer lost sight of it.
         state = { ...state, connected: false, runState: 'disconnected' };

@@ -45,10 +45,16 @@ class FakeSocket extends net.Socket {
     }
 }
 
-function makeClient(): { client: BridgeClient; sockets: FakeSocket[] } {
+/** A fixed fake token: tests must never read or print the real one. */
+const TEST_TOKEN = 'test-token-not-the-real-one';
+
+function makeClient(
+    readToken: () => string | undefined = () => TEST_TOKEN
+): { client: BridgeClient; sockets: FakeSocket[] } {
     const sockets: FakeSocket[] = [];
     const client = new BridgeClient({
         retryDelaysMs: [10],
+        readToken,
         createSocket: () => {
             const socket = new FakeSocket();
             sockets.push(socket);
@@ -133,6 +139,8 @@ test('sending is refused while disconnected and succeeds once connected', () => 
     assert.equal(client.ping(), true);
 
     assert.deepEqual(sockets[0].written, [
+        // The client authenticates first, before any control command.
+        `{"type":"auth","token":"${TEST_TOKEN}"}\n`,
         '{"type":"cancel"}\n',
         '{"type":"approve","requestId":17}\n',
         '{"type":"deny","requestId":18}\n',
@@ -164,4 +172,58 @@ test('dispose stops further reconnection', async () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     assert.equal(sockets.length, 1, 'a disposed client must not reconnect');
+});
+
+// MARK: authentication
+
+test('authenticates immediately on connect, before any other command', () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    sockets[0].open();
+
+    assert.equal(sockets[0].written.length, 1);
+    assert.deepEqual(JSON.parse(sockets[0].written[0]), { type: 'auth', token: TEST_TOKEN });
+    client.dispose();
+});
+
+test('re-authenticates after every reconnect', async () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    sockets[0].open();
+    sockets[0].simulateClose();
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    sockets[1].open();
+
+    // A fresh connection starts untrusted on the Aiflow side, so it must prove itself again.
+    assert.deepEqual(JSON.parse(sockets[1].written[0]), { type: 'auth', token: TEST_TOKEN });
+    client.dispose();
+});
+
+test('reports authFailed and sends nothing when no token is available', () => {
+    let failed = 0;
+    const { client, sockets } = makeClient(() => undefined);
+    client.on('authFailed', () => (failed += 1));
+
+    client.connect();
+    sockets[0].open();
+
+    assert.equal(failed, 1);
+    assert.deepEqual(sockets[0].written, [], 'no auth frame without a token');
+    client.dispose();
+});
+
+test('an oversized inbound frame destroys the connection', () => {
+    const { client, sockets } = makeClient();
+    const received: BridgeEvent[] = [];
+    client.on('event', (e: BridgeEvent) => received.push(e));
+
+    client.connect();
+    sockets[0].open();
+    // More than 1 MiB with no newline in sight.
+    sockets[0].feed('x'.repeat(1024 * 1024 + 10));
+
+    assert.equal(sockets[0].destroyed_, true);
+    assert.deepEqual(received, []);
+    client.dispose();
 });

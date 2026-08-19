@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import {
     BRIDGE_HOST,
     BRIDGE_PORT,
+    MAX_FRAME_BYTES,
+    TOKEN_RELATIVE_PATH,
     LineBuffer,
     encodeCommand,
     initialState,
@@ -52,6 +54,38 @@ test('line buffer handles several frames plus a trailing partial in one chunk', 
 test('line buffer skips blank lines', () => {
     const buffer = new LineBuffer();
     assert.deepEqual(buffer.append('\n\n{"type":"hello"}\n'), ['{"type":"hello"}']);
+});
+
+// MARK: bounded framing
+
+test('line buffer rejects an oversized frame with no newline', () => {
+    const buffer = new LineBuffer(1024);
+    assert.deepEqual(buffer.append('x'.repeat(512)), []);
+    assert.equal(buffer.append('x'.repeat(1024)), null, 'exceeding the limit must reject');
+    assert.equal(buffer.didOverflow, true);
+});
+
+test('line buffer stays rejected after overflow until reset', () => {
+    const buffer = new LineBuffer(64);
+    buffer.append('x'.repeat(200));
+    assert.equal(buffer.append('{"type":"hello"}\n'), null);
+
+    buffer.reset();
+    assert.deepEqual(buffer.append('{"type":"hello"}\n'), ['{"type":"hello"}']);
+});
+
+test('many complete frames never trip the limit', () => {
+    const buffer = new LineBuffer(128);
+    for (let i = 0; i < 500; i += 1) {
+        assert.notEqual(buffer.append('{"type":"hello"}\n'), null);
+    }
+    assert.equal(buffer.didOverflow, false);
+});
+
+test('inbound frame limit is bounded and larger than the command limit', () => {
+    // Events can carry a whole agent message, so the inbound ceiling is 1 MiB while Aiflow
+    // caps inbound commands at 64 KiB.
+    assert.equal(MAX_FRAME_BYTES, 1024 * 1024);
 });
 
 // MARK: parsing
@@ -210,4 +244,15 @@ test('status labels cover the disconnected and retrying cases', () => {
     assert.equal(statusLabel({ connected: false, runState: 'running' }), 'Disconnected');
     assert.equal(statusLabel({ connected: true, runState: 'retrying' }), 'Retrying');
     assert.equal(statusLabel({ connected: true, runState: 'cancelling' }), 'Cancelling');
+});
+
+// MARK: auth command shape
+
+test('outbound auth command carries the token and nothing else', () => {
+    const line = encodeCommand({ type: 'auth', token: 'deadbeef' });
+    assert.equal(line, '{"type":"auth","token":"deadbeef"}\n');
+});
+
+test('token path points at Aiflow application support state', () => {
+    assert.equal(TOKEN_RELATIVE_PATH, 'Library/Application Support/Aiflow/bridge-token');
 });

@@ -90,6 +90,13 @@ Outbound events: `hello`, `snapshot`, `run_started`, `run_status`, `agent_messag
 `approval_requested`, `question_requested`, `run_completed`, `run_failed`, `run_cancelled`,
 `file_open`. Inbound commands: `ping`, `cancel`, `approve`, `deny`, `answer_question`.
 
+The connection is authenticated. On connect Aiflow sends only a version `hello`; the client
+must then send `{"type":"auth","token":"…"}` before it receives a snapshot or can issue any
+command. The token is generated once and stored `0600` at
+`~/Library/Application Support/Aiflow/bridge-token`. It is never logged, shown, or included
+in an event. A wrong token closes the connection, and authentication is per connection — a
+reconnect must authenticate again.
+
 The bridge is transport only. `WidgetViewModel` stays the source of truth:
 
 - A command carries a verb, an optional request id, and answers — never a repository path,

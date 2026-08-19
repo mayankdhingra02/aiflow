@@ -19,6 +19,7 @@ final class BridgeIntegrationTests: XCTestCase {
     private var client: TestBridgeClient!
 
     private let project = SavedProject(name: "ef", path: "/repos/ef")
+    private let token = BridgeToken.generate()
 
     override func setUp() async throws {
         try await super.setUp()
@@ -38,12 +39,14 @@ final class BridgeIntegrationTests: XCTestCase {
         )
 
         let port = UInt16.random(in: 49_000...49_190)
-        server = AiflowBridgeServer(port: port)
+        // An explicit test token: never the real one from Application Support.
+        server = AiflowBridgeServer(port: port, token: token)
         viewModel.attachBridge(server)
 
         client = try TestBridgeClient(port: port)
-        // Every client is greeted with hello + snapshot.
+        // A client is greeted with hello, then must authenticate before any run state.
         _ = try await client.nextEvent(ofType: .hello)
+        client.send(#"{"type":"auth","token":"\#(token)"}"#)
         _ = try await client.nextEvent(ofType: .snapshot)
     }
 
@@ -183,6 +186,8 @@ final class BridgeIntegrationTests: XCTestCase {
         let reconnected = try TestBridgeClient(port: server.boundPort)
         defer { reconnected.close() }
         _ = try await reconnected.nextEvent(ofType: .hello)
+        // A fresh connection starts untrusted and must authenticate again.
+        reconnected.send(#"{"type":"auth","token":"\#(token)"}"#)
         let snapshot = try await reconnected.nextEvent(ofType: .snapshot)
 
         XCTAssertEqual(snapshot.runState, "waiting_for_approval")

@@ -27,10 +27,17 @@ final class AiflowBridgeServer: @unchecked Sendable {
     private var connections: [ObjectIdentifier: Connection] = [:]
     private let lock = NSLock()
 
+    /// The expected token. Never logged, never sent, never included in an event.
+    private let token: String?
+
     private(set) var lastError: String?
 
-    init(port: UInt16 = AiflowBridgeServer.defaultPort) {
+    init(
+        port: UInt16 = AiflowBridgeServer.defaultPort,
+        token: String? = BridgeToken.loadOrCreate()
+    ) {
         self.port = port
+        self.token = token
     }
 
     /// The port this server was configured with; lets a reconnecting client find it again.
@@ -93,10 +100,12 @@ final class AiflowBridgeServer: @unchecked Sendable {
     }
 
     /// Sends an event to every connected client. A send failure only drops that client.
+    /// Events only ever reach authenticated connections. An unauthenticated socket sees the
+    /// `hello` frame and nothing else — no run state, no request ids.
     func broadcast(_ event: BridgeEvent) {
         guard let data = BridgeCodec.encode(event) else { return }
         lock.lock()
-        let targets = Array(connections.values)
+        let targets = connections.values.filter { $0.isAuthenticated }
         lock.unlock()
         targets.forEach { $0.send(data) }
     }
@@ -106,7 +115,7 @@ final class AiflowBridgeServer: @unchecked Sendable {
         let key = ObjectIdentifier(connection)
 
         connection.onLine = { [weak self] line in
-            self?.receive(line: line)
+            self?.receive(line: line, on: connection)
         }
         connection.onClose = { [weak self] in
             guard let self else { return }
@@ -122,20 +131,42 @@ final class AiflowBridgeServer: @unchecked Sendable {
 
         connection.start()
 
-        // Greet immediately, then describe the world as it is right now, so a client that
-        // connects mid-run can reconstruct its UI without restarting anything.
+        // A version greeting is safe before authentication: it carries no run state and no
+        // request ids. The snapshot waits until the client proves who it is.
         if let hello = BridgeCodec.encode(.hello()) { connection.send(hello) }
+    }
+
+    private func receive(line: String, on connection: Connection) {
+        // Malformed JSON and unknown command types decode to nil and are dropped here.
+        guard let command = BridgeCodec.decodeCommand(line) else { return }
+
+        guard connection.isAuthenticated else {
+            // The only command an unauthenticated connection can issue is `auth`.
+            guard command.type == .auth else { return }
+            guard let candidate = command.token, let expected = token,
+                BridgeToken.matches(candidate, expected: expected)
+            else {
+                // Never say what was wrong, and never echo the expected value.
+                connection.cancel()
+                return
+            }
+
+            connection.isAuthenticated = true
+            sendSnapshot(to: connection)
+            return
+        }
+
         Task { @MainActor [weak self] in
-            guard let self, let snapshot = self.controller?.bridgeSnapshot() else { return }
-            if let data = BridgeCodec.encode(snapshot) { connection.send(data) }
+            self?.controller?.handleBridgeCommand(command)
         }
     }
 
-    private func receive(line: String) {
-        // Malformed JSON and unknown command types decode to nil and are dropped here.
-        guard let command = BridgeCodec.decodeCommand(line) else { return }
+    /// Describes the world as it is right now, so a client that authenticates mid-run can
+    /// reconstruct its UI without the run restarting.
+    private func sendSnapshot(to connection: Connection) {
         Task { @MainActor [weak self] in
-            self?.controller?.handleBridgeCommand(command)
+            guard let self, let snapshot = self.controller?.bridgeSnapshot() else { return }
+            if let data = BridgeCodec.encode(snapshot) { connection.send(data) }
         }
     }
 
@@ -143,7 +174,23 @@ final class AiflowBridgeServer: @unchecked Sendable {
     private final class Connection {
         private let nwConnection: NWConnection
         private let queue: DispatchQueue
-        private let buffer = LineBuffer()
+        private let buffer = BoundedLineBuffer()
+        private let stateLock = NSLock()
+        private var authenticated = false
+
+        /// Per connection: authenticating one client never authenticates another.
+        var isAuthenticated: Bool {
+            get {
+                stateLock.lock()
+                defer { stateLock.unlock() }
+                return authenticated
+            }
+            set {
+                stateLock.lock()
+                authenticated = newValue
+                stateLock.unlock()
+            }
+        }
 
         var onLine: ((String) -> Void)?
         var onClose: (() -> Void)?
@@ -180,7 +227,13 @@ final class AiflowBridgeServer: @unchecked Sendable {
                 guard let self else { return }
 
                 if let data, !data.isEmpty {
-                    for line in self.buffer.append(data) {
+                    guard let lines = self.buffer.append(data) else {
+                        // Oversized frame: a legitimate command never gets close to the limit.
+                        self.onClose?()
+                        self.nwConnection.cancel()
+                        return
+                    }
+                    for line in lines {
                         self.onLine?(line)
                     }
                 }

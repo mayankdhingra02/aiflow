@@ -112,8 +112,13 @@ final class AiflowBridgeServerTests: XCTestCase {
     /// A high port so a running Aiflow app on 47321 cannot collide with the tests.
     private func freePort() -> UInt16 { UInt16.random(in: 49_200...49_900) }
 
+    /// An explicit test token: never the real one from Application Support.
+    private let token = BridgeToken.generate()
+
+    private func authLine() -> String { #"{"type":"auth","token":"\#(token)"}"# }
+
     func testServerBindsToLoopbackOnly() {
-        let server = AiflowBridgeServer(port: freePort())
+        let server = AiflowBridgeServer(port: freePort(), token: token)
         defer { server.stop() }
 
         XCTAssertTrue(server.start())
@@ -131,7 +136,7 @@ final class AiflowBridgeServerTests: XCTestCase {
     func testClientReceivesHelloAndSnapshotThenCommandsReachController() async throws {
         let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port)
+        let server = AiflowBridgeServer(port: port, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())
@@ -142,6 +147,7 @@ final class AiflowBridgeServerTests: XCTestCase {
         let hello = try await client.nextLine(timeout: 3)
         XCTAssertEqual(BridgeCodec.decodeEvent(hello)?.type, .hello)
 
+        client.send(authLine() + "\n")
         let snapshot = try await client.nextLine(timeout: 3)
         let decoded = BridgeCodec.decodeEvent(snapshot)
         XCTAssertEqual(decoded?.type, .snapshot)
@@ -161,7 +167,7 @@ final class AiflowBridgeServerTests: XCTestCase {
     func testBroadcastReachesConnectedClient() async throws {
         let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port)
+        let server = AiflowBridgeServer(port: port, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())
@@ -170,6 +176,7 @@ final class AiflowBridgeServerTests: XCTestCase {
         defer { client.close() }
 
         _ = try await client.nextLine(timeout: 3)  // hello
+        client.send(authLine() + "\n")
         _ = try await client.nextLine(timeout: 3)  // snapshot
 
         server.broadcast(.agentMessage("hello from codex"))
@@ -184,7 +191,7 @@ final class AiflowBridgeServerTests: XCTestCase {
     func testDisconnectionDoesNotMutateRunState() async throws {
         let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port)
+        let server = AiflowBridgeServer(port: port, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())

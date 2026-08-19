@@ -514,6 +514,11 @@ extension WidgetViewModel: BridgeController {
     /// request is ignored — the view model's state is authoritative, not the client's claim.
     func handleBridgeCommand(_ command: BridgeCommand) {
         switch command.type {
+        case .auth:
+            // Authentication is settled by the transport before a command ever reaches the
+            // view model; reaching here means the token was already accepted.
+            break
+
         case .ping:
             emit(bridgeSnapshot())
 
