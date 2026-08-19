@@ -157,14 +157,31 @@ export class LineBuffer {
         const parts = this.pending.split('\n');
         this.pending = parts.pop() ?? '';
 
+        // Every completed frame is measured, not just the trailing remainder: an oversized
+        // frame that arrives already newline-terminated would otherwise pass unchecked.
+        // Byte length, not character count, so multi-byte text is measured as it is framed.
+        for (const part of parts) {
+            if (Buffer.byteLength(part, 'utf8') > this.limit) {
+                return this.reject();
+            }
+        }
+
         // Whatever remains has no newline yet; past the limit it never will.
         if (Buffer.byteLength(this.pending, 'utf8') > this.limit) {
-            this.overflowed = true;
-            this.pending = '';
-            return null;
+            return this.reject();
         }
 
         return parts.map((part) => part.trim()).filter((part) => part.length > 0);
+    }
+
+    /**
+     * Drops everything buffered and refuses the rest of the stream. No frames are returned
+     * from the offending append, even ones parsed before the oversized frame.
+     */
+    private reject(): null {
+        this.overflowed = true;
+        this.pending = '';
+        return null;
     }
 
     reset(): void {

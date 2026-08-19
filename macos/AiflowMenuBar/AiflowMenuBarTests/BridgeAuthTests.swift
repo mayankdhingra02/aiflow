@@ -103,6 +103,68 @@ final class BoundedLineBufferTests: XCTestCase {
     func testDefaultLimitIsBounded() {
         XCTAssertEqual(BoundedLineBuffer.maxFrameBytes, 64 * 1024)
     }
+
+    // MARK: - Oversized frames that are already newline-terminated
+    //
+    // Checking only the trailing remainder would let a complete oversized frame through,
+    // because extracting it leaves nothing behind to measure.
+
+    private func payload(_ count: Int) -> Data {
+        Data(repeating: UInt8(ascii: "x"), count: count)
+    }
+
+    func testOversizedCompleteFrameInASingleAppendIsRejected() {
+        let buffer = BoundedLineBuffer(limit: 64)
+
+        var frame = payload(70)
+        frame.append(UInt8(ascii: "\n"))
+
+        XCTAssertNil(buffer.append(frame), "a terminated oversized frame must be rejected")
+        XCTAssertTrue(buffer.didOverflow)
+    }
+
+    func testOversizedFrameCompletedByALaterChunkIsRejected() {
+        let buffer = BoundedLineBuffer(limit: 64)
+
+        // Stay under the limit per chunk so only the assembled frame is oversized.
+        XCTAssertNotNil(buffer.append(payload(40)))
+        XCTAssertNotNil(buffer.append(payload(20)))
+
+        // This chunk both pushes it over and terminates it.
+        XCTAssertNil(buffer.append(payload(20) + Data("\n".utf8)))
+        XCTAssertTrue(buffer.didOverflow)
+    }
+
+    func testNoFramesAreReturnedFromAnAppendContainingAnOversizedFrame() {
+        let buffer = BoundedLineBuffer(limit: 64)
+
+        var data = Data("{\"type\":\"ping\"}\n".utf8)
+        data.append(payload(70))
+        data.append(UInt8(ascii: "\n"))
+
+        // The good frame that preceded the oversized one is discarded along with it.
+        XCTAssertNil(buffer.append(data))
+    }
+
+    func testFrameExactlyAtTheLimitIsAccepted() {
+        let buffer = BoundedLineBuffer(limit: 64)
+
+        var frame = payload(64)
+        frame.append(UInt8(ascii: "\n"))
+
+        let lines = buffer.append(frame)
+        XCTAssertEqual(lines?.count, 1)
+        XCTAssertEqual(lines?.first?.count, 64)
+        XCTAssertFalse(buffer.didOverflow)
+    }
+
+    func testSeveralSmallFramesInOneAppendAreAccepted() {
+        let buffer = BoundedLineBuffer(limit: 64)
+        let data = Data("{\"type\":\"ping\"}\n{\"type\":\"cancel\"}\n".utf8)
+
+        XCTAssertEqual(buffer.append(data), ["{\"type\":\"ping\"}", "{\"type\":\"cancel\"}"])
+        XCTAssertFalse(buffer.didOverflow)
+    }
 }
 
 // MARK: - Authenticated server

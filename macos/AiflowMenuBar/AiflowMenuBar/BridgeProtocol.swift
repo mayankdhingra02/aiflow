@@ -170,18 +170,28 @@ final class BoundedLineBuffer {
         while let newlineIndex = pending.firstIndex(of: UInt8(ascii: "\n")) {
             let lineData = pending[pending.startIndex..<newlineIndex]
             pending = pending[pending.index(after: newlineIndex)...]
+
+            // A frame that arrives already terminated must be measured too — checking only
+            // the trailing remainder would let an oversized complete frame straight through.
+            if lineData.count > limit { return reject() }
+
             let line = String(decoding: lineData, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !line.isEmpty { lines.append(line) }
         }
 
         // Whatever is left has no newline yet; if it is already over the limit it never will be.
-        if pending.count > limit {
-            didOverflow = true
-            pending = Data()
-            return nil
-        }
+        if pending.count > limit { return reject() }
+
         return lines
+    }
+
+    /// Drops everything buffered and refuses the rest of the stream. No frames are returned
+    /// from the offending append, even ones parsed before the oversized frame.
+    private func reject() -> [String]? {
+        didOverflow = true
+        pending = Data()
+        return nil
     }
 }
 

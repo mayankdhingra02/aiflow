@@ -82,6 +82,52 @@ test('many complete frames never trip the limit', () => {
     assert.equal(buffer.didOverflow, false);
 });
 
+// An oversized frame that arrives already newline-terminated would slip past a check that
+// only measures the trailing remainder, since extracting it leaves nothing behind.
+
+test('oversized complete frame in a single append is rejected', () => {
+    const buffer = new LineBuffer(64);
+    assert.equal(buffer.append('x'.repeat(70) + '\n'), null);
+    assert.equal(buffer.didOverflow, true);
+});
+
+test('oversized frame completed by a later chunk is rejected', () => {
+    const buffer = new LineBuffer(64);
+    // Each chunk stays under the limit; only the assembled frame is oversized.
+    assert.deepEqual(buffer.append('x'.repeat(40)), []);
+    assert.deepEqual(buffer.append('x'.repeat(20)), []);
+    assert.equal(buffer.append('x'.repeat(20) + '\n'), null);
+    assert.equal(buffer.didOverflow, true);
+});
+
+test('no frames are returned from an append containing an oversized frame', () => {
+    const buffer = new LineBuffer(64);
+    // The good frame preceding the oversized one is discarded along with it.
+    assert.equal(buffer.append('{"type":"ping"}\n' + 'x'.repeat(70) + '\n'), null);
+});
+
+test('frame exactly at the limit is accepted', () => {
+    const buffer = new LineBuffer(64);
+    const lines = buffer.append('x'.repeat(64) + '\n');
+    assert.deepEqual(lines, ['x'.repeat(64)]);
+    assert.equal(buffer.didOverflow, false);
+});
+
+test('several small frames in one append are accepted', () => {
+    const buffer = new LineBuffer(64);
+    assert.deepEqual(buffer.append('{"type":"ping"}\n{"type":"cancel"}\n'), [
+        '{"type":"ping"}',
+        '{"type":"cancel"}'
+    ]);
+    assert.equal(buffer.didOverflow, false);
+});
+
+test('the limit is measured in bytes, not characters', () => {
+    // 30 emoji are 30 characters but 120 UTF-8 bytes.
+    const buffer = new LineBuffer(64);
+    assert.equal(buffer.append('😀'.repeat(30) + '\n'), null);
+});
+
 test('inbound frame limit is bounded and larger than the command limit', () => {
     // Events can carry a whole agent message, so the inbound ceiling is 1 MiB while Aiflow
     // caps inbound commands at 64 KiB.
