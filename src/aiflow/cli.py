@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 import shutil
 import sys
@@ -37,8 +38,10 @@ from aiflow.git import (
 )
 from aiflow.models import (
     CodexRunSpec,
+    ModelRole,
     PacketStage,
     ProjectRecord,
+    ReasoningEffort,
     RunHistoryStatus,
     RunKind,
     TaskStatus,
@@ -96,6 +99,18 @@ def _fail(
 ) -> None:
     console.print(f"[bold red]Error:[/bold red] {message}")
     raise typer.Exit(code)
+
+
+def _print_json(
+    payload: object,
+) -> None:
+    typer.echo(
+        json.dumps(
+            payload,
+            indent=2,
+            default=str,
+        )
+    )
 
 
 def _codex_failure_recovery_message(
@@ -276,6 +291,50 @@ def list_projects() -> None:
         )
 
     console.print(table)
+
+
+@app.command("models")
+def list_models(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Print the model and reasoning options as JSON."),
+        ),
+    ] = False,
+) -> None:
+    """List the Codex model roles and reasoning efforts Aiflow supports."""
+    models = [
+        {
+            "role": role.value,
+            "model_id": MODEL_BY_ROLE[role.value],
+        }
+        for role in ModelRole
+    ]
+
+    efforts = [effort.value for effort in ReasoningEffort]
+
+    if json_output:
+        _print_json(
+            {
+                "models": models,
+                "reasoning_efforts": efforts,
+                "default_sandbox": (CodexRunSpec.model_fields["sandbox"].default),
+            }
+        )
+        return
+
+    table = Table(title="Aiflow Codex models")
+
+    table.add_column("Role")
+    table.add_column("Model ID")
+
+    for entry in models:
+        table.add_row(entry["role"], entry["model_id"])
+
+    console.print(table)
+
+    console.print(f"Reasoning efforts: {', '.join(efforts)}")
 
 
 @app.command()
