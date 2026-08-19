@@ -68,33 +68,172 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(summary, "Network access")
     }
 
-    func testUserInputRequestBecomesInputEvent() {
-    let event = decode(
-        """
-        {"id":11,"method":"item/tool/requestUserInput",
-         "params":{"questions":[
-             {
-                 "id":"answer",
-                 "question":"Should I update the migration as well?"
-             }
-         ]}}
-        """)
+    func testSingleQuestionRequestIsParsed() {
+        let event = decode(
+            """
+            {"id":11,"method":"item/tool/requestUserInput",
+             "params":{"questions":[
+                 {"id":"migration","header":"Scope",
+                  "question":"Should I update the migration as well?"}
+             ]}}
+            """)
 
-    XCTAssertEqual(
-        event,
-        .inputRequested(
-            id: .integer(11),
-            questionID: "answer",
-            question: "Should I update the migration as well?"
-        )
-    )
-}
+        guard case .inputRequested(let id, let questions) = event else {
+            return XCTFail("expected an input request")
+        }
+        XCTAssertEqual(id, .integer(11))
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions[0].id, "migration")
+        XCTAssertEqual(questions[0].header, "Scope")
+        XCTAssertEqual(questions[0].question, "Should I update the migration as well?")
+        XCTAssertTrue(questions[0].allowsFreeForm)
+    }
 
-    func testTurnLifecycleEvents() {
+    /// The protocol allows several questions per request; all of them must survive parsing.
+    func testThreeQuestionRequestPreservesEveryQuestion() {
+        let event = decode(
+            """
+            {"id":12,"method":"item/tool/requestUserInput",
+             "params":{"questions":[
+                 {"id":"q1","header":"A","question":"First?"},
+                 {"id":"q2","header":"B","question":"Second?"},
+                 {"id":"q3","header":"C","question":"Third?"}
+             ]}}
+            """)
+
+        guard case .inputRequested(_, let questions) = event else {
+            return XCTFail("expected an input request")
+        }
+        XCTAssertEqual(questions.map(\.id), ["q1", "q2", "q3"])
+        XCTAssertEqual(questions.map(\.question), ["First?", "Second?", "Third?"])
+    }
+
+    func testOptionQuestionKeepsLabelsDescriptionsAndFlags() {
+        let event = decode(
+            """
+            {"id":13,"method":"item/tool/requestUserInput",
+             "params":{"questions":[
+                 {"id":"api","header":"API","question":"Which API version?",
+                  "isOther":true,"isSecret":false,
+                  "options":[
+                     {"label":"v1","description":"Stable"},
+                     {"label":"v2","description":"Beta"}
+                  ]}
+             ]}}
+            """)
+
+        guard case .inputRequested(_, let questions) = event else {
+            return XCTFail("expected an input request")
+        }
+        let question = questions[0]
+        XCTAssertEqual(question.options.map(\.label), ["v1", "v2"])
+        XCTAssertEqual(question.options.map(\.description), ["Stable", "Beta"])
+        XCTAssertTrue(question.isOther)
+        XCTAssertFalse(question.isSecret)
+        // "Other" is permitted, so free text is offered alongside the options.
+        XCTAssertTrue(question.allowsFreeForm)
+    }
+
+    func testOptionQuestionWithoutOtherDoesNotOfferFreeForm() {
+        let event = decode(
+            """
+            {"id":14,"method":"item/tool/requestUserInput",
+             "params":{"questions":[
+                 {"id":"api","header":"API","question":"Which?",
+                  "options":[{"label":"v1","description":"Stable"}]}
+             ]}}
+            """)
+
+        guard case .inputRequested(_, let questions) = event else {
+            return XCTFail("expected an input request")
+        }
+        XCTAssertFalse(questions[0].allowsFreeForm)
+        XCTAssertFalse(questions[0].isOther)
+    }
+
+    func testSecretQuestionFlagIsPreserved() {
+        let event = decode(
+            """
+            {"id":15,"method":"item/tool/requestUserInput",
+             "params":{"questions":[
+                 {"id":"token","header":"Token","question":"API token?","isSecret":true}
+             ]}}
+            """)
+
+        guard case .inputRequested(_, let questions) = event else {
+            return XCTFail("expected an input request")
+        }
+        XCTAssertTrue(questions[0].isSecret)
+    }
+
+    func testRequestWithNoUsableQuestionsIsIgnored() {
+        XCTAssertNil(
+            decode(#"{"id":16,"method":"item/tool/requestUserInput","params":{"questions":[]}}"#))
+    }
+
+    func testTurnStartedIsSurfaced() {
         XCTAssertEqual(decode(#"{"method":"turn/started","params":{}}"#), .started)
-        XCTAssertEqual(decode(#"{"method":"turn/completed","params":{}}"#), .finished)
+    }
+
+    // MARK: - turn/completed carries its own status
+
+    func testCompletedStatusFinishesTheRun() {
         XCTAssertEqual(
-            decode(#"{"method":"error","params":{"message":"boom"}}"#), .failed("boom"))
+            decode(
+                #"{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","status":"completed"}}}"#
+            ),
+            .finished)
+    }
+
+    func testFailedStatusReportsTheStructuredError() {
+        XCTAssertEqual(
+            decode(
+                """
+                {"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u",
+                 "status":"failed","error":{"message":"model overloaded"}}}}
+                """),
+            .failed("model overloaded"))
+    }
+
+    func testInterruptedStatusReportsCancellation() {
+        XCTAssertEqual(
+            decode(
+                #"{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","status":"interrupted"}}}"#
+            ),
+            .cancelled)
+    }
+
+    func testInProgressStatusIsNotTreatedAsCompletion() {
+        XCTAssertNil(
+            decode(
+                #"{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}"#
+            ))
+    }
+
+    // MARK: - error notification shape
+
+    /// ErrorNotification nests the message under `error` (TurnError.message).
+    func testNestedErrorMessageIsParsed() {
+        XCTAssertEqual(
+            decode(
+                """
+                {"method":"error","params":{"threadId":"t","turnId":"u","willRetry":false,
+                 "error":{"message":"stream disconnected"}}}
+                """),
+            .failed("stream disconnected"))
+    }
+
+    func testErrorWithoutAMessageStillFails() {
+        guard case .failed = decode(#"{"method":"error","params":{"error":{}}}"#) else {
+            return XCTFail("expected a failure event")
+        }
+    }
+
+    func testServerRequestResolvedIsSurfacedWithItsExactId() {
+        XCTAssertEqual(
+            decode(
+                #"{"method":"serverRequest/resolved","params":{"threadId":"t","requestId":17}}"#),
+            .requestResolved(.integer(17)))
     }
 
     func testAssistantMessageIsSurfaced() {
@@ -138,12 +277,43 @@ final class CodexProtocolTests: XCTestCase {
     }
 
     func testUserInputResponseCarriesTheAnswer() {
-        let question = UserQuestion(id: .integer(5), questionID: "auth-flow", question: "Which?", projectName: "p")
-        let response = CodexProtocol.userInputResponse(question, answer: "Yes, update it")
+        let request = UserQuestion(
+            id: .integer(5),
+            questions: [
+                QuestionItem(
+                    id: "auth-flow", header: "Auth", question: "Which?", options: [],
+                    isOther: false, isSecret: false)
+            ],
+            projectName: "p")
+        let response = CodexProtocol.userInputResponse(request, answers: ["auth-flow": "OAuth"])
 
         XCTAssertEqual(response["id"] as? Int, 5)
         let answers = (response["result"] as? [String: Any])?["answers"] as? [String: Any]
-        XCTAssertEqual(((answers?["auth-flow"] as? [String: Any])?["answers"] as? [String])?.first, "Yes, update it")
+        XCTAssertEqual(
+            ((answers?["auth-flow"] as? [String: Any])?["answers"] as? [String])?.first, "OAuth")
+    }
+
+    /// The response must be keyed by every exact question id — no invented fallback keys.
+    func testResponseIncludesEveryQuestionIdAndInventsNone() {
+        let request = UserQuestion(
+            id: .integer(6),
+            questions: ["q1", "q2", "q3"].map {
+                QuestionItem(
+                    id: $0, header: "", question: "?", options: [], isOther: false,
+                    isSecret: false)
+            },
+            projectName: "p")
+
+        let response = CodexProtocol.userInputResponse(
+            request, answers: ["q1": "a", "q2": "b", "q3": "c"])
+        let answers = (response["result"] as? [String: Any])?["answers"] as? [String: Any]
+
+        XCTAssertEqual(answers?.keys.sorted(), ["q1", "q2", "q3"])
+        XCTAssertNil(answers?["answer"], "must not invent a fallback question id")
+        for (key, expected) in ["q1": "a", "q2": "b", "q3": "c"] {
+            XCTAssertEqual(
+                ((answers?[key] as? [String: Any])?["answers"] as? [String])?.first, expected)
+        }
     }
 
     func testDestructiveRequestsPreferDeny() {
@@ -292,15 +462,102 @@ final class ApprovalStateTests: XCTestCase {
         XCTAssertTrue(viewModel.runState.isBusy)
     }
 
+    private func question(_ id: String) -> QuestionItem {
+        QuestionItem(
+            id: id, header: "", question: "Which API version?", options: [], isOther: false,
+            isSecret: false)
+    }
+
     func testInputEventMovesToWaitingForInput() {
         let viewModel = makeViewModel()
         viewModel.enterRunningForTesting(project)
 
         viewModel.handleEventForTesting(
-            .inputRequested(id: .integer(4), questionID: "api", question: "Which API version?"), project: project)
+            .inputRequested(id: .integer(4), questions: [question("api")]), project: project)
 
         XCTAssertEqual(viewModel.pendingQuestion?.id, .integer(4))
-        XCTAssertEqual(viewModel.pendingQuestion?.question, "Which API version?")
+        XCTAssertEqual(viewModel.pendingQuestion?.questions.first?.question, "Which API version?")
+    }
+
+    // MARK: - Approvals stay pending until Codex resolves that exact request
+
+    func testApprovalStaysPendingUntilItsExactRequestResolves() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(17), kind: .commandExecution, summary: "npm i", detail: nil,
+                permissionProfile: nil), project: project)
+
+        viewModel.respondToApproval(allow: true)
+
+        // Answered, but not yet acknowledged: still blocked on request 17.
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(17)))
+        XCTAssertNil(viewModel.pendingApproval)
+        XCTAssertTrue(viewModel.runState.isBusy)
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(17)), project: project)
+
+        XCTAssertEqual(viewModel.runState, .running(project))
+    }
+
+    func testResolutionOfAnEarlierRequestDoesNotClearTheCurrentOne() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(17), kind: .commandExecution, summary: "npm i", detail: nil,
+                permissionProfile: nil), project: project)
+        viewModel.respondToApproval(allow: true)
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(16)), project: project)
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(17)))
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(18)), project: project)
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(17)))
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(17)), project: project)
+        XCTAssertEqual(viewModel.runState, .running(project))
+    }
+
+    func testQuestionStaysPendingUntilItsExactRequestResolves() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.handleEventForTesting(
+            .inputRequested(id: .integer(21), questions: [question("api")]), project: project)
+
+        viewModel.respondToQuestion(["api": "v2"])
+
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(21)))
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(20)), project: project)
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(21)))
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(21)), project: project)
+        XCTAssertEqual(viewModel.runState, .running(project))
+    }
+
+    func testPartiallyAnsweredMultiQuestionRequestIsNotSent() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.handleEventForTesting(
+            .inputRequested(id: .integer(22), questions: [question("q1"), question("q2")]),
+            project: project)
+
+        viewModel.respondToQuestion(["q1": "only one"])
+
+        // Still waiting: every question must be answered before anything is sent.
+        XCTAssertEqual(viewModel.pendingQuestion?.id, .integer(22))
+    }
+
+    func testInterruptedTurnCancelsRatherThanFails() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(.cancelled, project: project)
+
+        XCTAssertEqual(viewModel.runState, .cancelled(project))
+        XCTAssertFalse(viewModel.runState.isBusy)
     }
 
     func testNoApprovalIsPendingUntilCodexAsks() {
@@ -404,12 +661,17 @@ final class ApprovalStateTests: XCTestCase {
         XCTAssertTrue(notifications.failures.isEmpty)
     }
 
-    func testCancellationReturnsToReadyAndDropsLateEvents() {
+    func testCancellationEntersCancelledAndDropsLateEvents() {
         let viewModel = makeViewModel()
         viewModel.enterRunningForTesting(project)
         viewModel.cancelRun()
+
+        XCTAssertEqual(viewModel.runState, .cancelled(project))
+        XCTAssertFalse(viewModel.runState.isBusy, "a cancelled run must not block the next one")
+
+        // Late output from the winding-down process must not overwrite the cancelled state.
         viewModel.handleEventForTesting(.failed("late"), project: project)
 
-        XCTAssertEqual(viewModel.runState, .ready)
+        XCTAssertEqual(viewModel.runState, .cancelled(project))
     }
 }

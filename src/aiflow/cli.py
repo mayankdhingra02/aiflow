@@ -265,21 +265,9 @@ def register(
 
 
 @app.command("projects")
-def list_projects(
-    json_output: Annotated[
-        bool,
-        typer.Option(
-            "--json",
-            help=("Print registered projects as JSON."),
-        ),
-    ] = False,
-) -> None:
+def list_projects() -> None:
     """List registered projects."""
     projects = _db().list_projects()
-
-    if json_output:
-        _print_json([project.model_dump(mode="json") for project in projects])
-        return
 
     if not projects:
         console.print(
@@ -487,20 +475,9 @@ def list_tasks(
             help=("Maximum number of recent tasks to show."),
         ),
     ] = 20,
-    json_output: Annotated[
-        bool,
-        typer.Option(
-            "--json",
-            help=("Print recent tasks as JSON."),
-        ),
-    ] = False,
 ) -> None:
     """List recent tasks."""
     tasks = _db().list_tasks(limit=limit)
-
-    if json_output:
-        _print_json([task.model_dump(mode="json") for task in tasks])
-        return
 
     if not tasks:
         console.print("No tasks have been created.")
@@ -1385,13 +1362,6 @@ def show(
             help="Task ID to display.",
         ),
     ],
-    json_output: Annotated[
-        bool,
-        typer.Option(
-            "--json",
-            help=("Print the task as JSON."),
-        ),
-    ] = False,
 ) -> None:
     """Show one task and its artifact paths."""
     db = _db()
@@ -1402,32 +1372,6 @@ def show(
         _fail(f"unknown task ID: {task_id}")
 
     project = db.get_project(task.project_id)
-
-    if json_output:
-        planner_prompt_path = task.task_dir / "planner-prompt.md"
-
-        latest_review = db.latest_review_history(task.id)
-
-        review_prompt_path = (
-            latest_review.artifact_dir / "review-prompt.md" if latest_review is not None else None
-        )
-
-        payload = task.model_dump(mode="json")
-
-        payload["project_name"] = project.name if project else None
-
-        payload["planner_prompt_path"] = (
-            str(planner_prompt_path) if planner_prompt_path.exists() else None
-        )
-
-        payload["review_prompt_path"] = (
-            str(review_prompt_path)
-            if review_prompt_path is not None and review_prompt_path.exists()
-            else None
-        )
-
-        _print_json(payload)
-        return
 
     console.print(
         Panel.fit(

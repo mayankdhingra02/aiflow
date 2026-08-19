@@ -14,52 +14,18 @@ enum AiflowCommand: Equatable {
 }
 
 struct CommandResult {
-    let arguments: [String]
     let stdout: String
     let stderr: String
     let exitCode: Int32
 
     var succeeded: Bool { exitCode == 0 }
-
-    /// A clean, human-readable rendering of the CLI's own output for the popover's
-    /// "last action" area. The backend prints via Rich, which draws panel borders using
-    /// Unicode box-drawing characters even when not attached to a terminal; those are
-    /// stripped here so the widget shows the backend's actual message text (including the
-    /// existing failure recovery guidance) instead of raw box art.
-    var summaryMessage: String {
-        let text = stdout.isEmpty ? stderr : stdout
-
-        let cleaned =
-            text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { Self.stripBoxDrawing($0).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-
-        if cleaned.isEmpty {
-            return succeeded ? "Done." : "Command failed."
-        }
-
-        let limit = 1200
-        return cleaned.count > limit ? String(cleaned.prefix(limit)) + "…" : cleaned
-    }
-
-    private static let boxDrawingRange: ClosedRange<UInt32> = 0x2500...0x257F
-
-    private static func stripBoxDrawing(_ line: Substring) -> String {
-        String(
-            String.UnicodeScalarView(
-                line.unicodeScalars.filter { !boxDrawingRange.contains($0.value) }
-            )
-        )
-    }
 }
 
 enum CLIError: Error, LocalizedError {
     case executableNotFound
     case launchFailed(String)
     case decodingFailed(String)
-    case commandFailed(CommandResult)
+    case commandFailed(exitCode: Int32)
 
     var errorDescription: String? {
         switch self {
@@ -69,8 +35,8 @@ enum CLIError: Error, LocalizedError {
             return "Failed to launch aiflow: \(detail)"
         case .decodingFailed(let detail):
             return "Could not read aiflow's output: \(detail)"
-        case .commandFailed(let result):
-            return result.summaryMessage
+        case .commandFailed(let exitCode):
+            return "aiflow models failed with exit code \(exitCode)"
         }
     }
 }
@@ -134,7 +100,7 @@ actor AiflowCLI {
     func decode<T: Decodable>(_ type: T.Type, from command: AiflowCommand) async throws -> T {
         let result = try await execute(command)
         guard result.succeeded else {
-            throw CLIError.commandFailed(result)
+            throw CLIError.commandFailed(exitCode: result.exitCode)
         }
         do {
             return try JSONDecoder().decode(T.self, from: Data(result.stdout.utf8))
@@ -181,7 +147,6 @@ actor AiflowCLI {
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
 
                 let result = CommandResult(
-                    arguments: arguments,
                     stdout: String(decoding: stdoutBuffer.snapshot(), as: UTF8.self),
                     stderr: String(decoding: stderrBuffer.snapshot(), as: UTF8.self),
                     exitCode: finished.terminationStatus

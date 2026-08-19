@@ -109,11 +109,33 @@ struct ApprovalRequest: Equatable, Identifiable {
     }
 }
 
-/// A clarifying question Codex asked mid-run.
+/// One selectable option offered for a question (schema: ToolRequestUserInputOption).
+struct QuestionOption: Equatable, Identifiable {
+    let label: String
+    let description: String
+
+    var id: String { label }
+}
+
+/// A single question inside a request (schema: ToolRequestUserInputQuestion). Field names
+/// mirror the schema exactly; nothing here is invented.
+struct QuestionItem: Equatable, Identifiable {
+    let id: String  // exact question id, used as the response dictionary key
+    let header: String
+    let question: String
+    let options: [QuestionOption]
+    let isOther: Bool
+    let isSecret: Bool
+
+    /// Free-form when there are no options, or when "Other" is explicitly permitted.
+    var allowsFreeForm: Bool { options.isEmpty || isOther }
+}
+
+/// A clarifying request Codex raised mid-run. The protocol allows several questions in one
+/// request, and the response must answer every one of them by its exact id.
 struct UserQuestion: Equatable, Identifiable {
     let id: CodexRequestID  // exact JSON-RPC request id to respond to
-    let questionID: String  // exact tool question id required by the response payload
-    let question: String
+    let questions: [QuestionItem]
     let projectName: String
 }
 
@@ -125,23 +147,29 @@ enum RunState: Equatable {
     case running(SavedProject)
     case waitingForApproval(ApprovalRequest)
     case waitingForInput(UserQuestion)
+    /// The user answered, but Codex has not yet confirmed it resolved that exact request.
+    case respondingToRequest(CodexRequestID)
     case completed(SavedProject)
+    case cancelled(SavedProject)
     case failed(project: SavedProject?, message: String)
-
-    /// The project a run is currently occupying, if any.
-    var activeProject: SavedProject? {
-        switch self {
-        case .launching(let p), .running(let p), .completed(let p): return p
-        case .failed(let project, _): return project
-        default: return nil
-        }
-    }
 
     /// True once a run has started and has not yet finished — blocks starting a second run.
     var isBusy: Bool {
         switch self {
-        case .launching, .running, .waitingForApproval, .waitingForInput: return true
-        case .ready, .confirming, .completed, .failed: return false
+        case .launching, .running, .waitingForApproval, .waitingForInput, .respondingToRequest:
+            return true
+        case .ready, .confirming, .completed, .cancelled, .failed:
+            return false
+        }
+    }
+
+    /// The server request this state is blocked on, if any.
+    var awaitingRequestID: CodexRequestID? {
+        switch self {
+        case .waitingForApproval(let request): return request.id
+        case .waitingForInput(let question): return question.id
+        case .respondingToRequest(let id): return id
+        default: return nil
         }
     }
 
@@ -153,7 +181,9 @@ enum RunState: Equatable {
         case .running: return "Running Codex…"
         case .waitingForApproval: return "Waiting for your approval"
         case .waitingForInput: return "Codex asked a question"
+        case .respondingToRequest: return "Sending your answer…"
         case .completed: return "✓ Codex finished"
+        case .cancelled: return "Run cancelled"
         case .failed(_, let detail): return "✕ \(detail)"
         }
     }

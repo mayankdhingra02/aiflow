@@ -32,16 +32,29 @@ Three separate things, none of them automatic:
 1. **Starting a run** — clicking a project opens a confirmation sheet. There is no
    "don't ask again".
 2. **Codex permission requests** — surfaced as a native Allow Once / Deny sheet. The
-   decision applies to that one request only.
-3. **Codex questions** — surfaced with a text field so you can answer.
+   decision applies to that one request only, and the run stays blocked on that exact
+   request id until Codex confirms it resolved it.
+3. **Codex questions** — a request may carry several questions; each is shown with its
+   options or a text field, and every one must be answered before the reply is sent.
 
 The run uses `sandbox: workspace-write` and `approvalPolicy: on-request`. Aiflow never
 sends `danger-full-access`, `--approve-for-me`, or any bypass flag.
 
-Because `codex exec` is non-interactive, runs use `codex app-server` over newline-delimited
-JSON-RPC:
-`initialize` → `thread/start` (cwd, model, sandbox, approvalPolicy) → `turn/start`
-(threadId, effort, prompt).
+Runs go through `codex app-server` over newline-delimited JSON-RPC:
+
+```
+initialize (capabilities.experimentalApi) → initialized → thread/start (cwd, model,
+sandbox, approvalPolicy) → turn/start (threadId, effort, prompt)
+```
+
+`initialized` must be sent before any request that follows initialize, and `turn/start`
+requires the `threadId` from the `thread/start` response. The thread and turn ids are
+retained for the active session so `turn/interrupt` can name them exactly; they are
+cleared when the session ends. `turn/completed` carries the turn's own status, so
+`completed`, `failed`, and `interrupted` are handled distinctly.
+
+The wire enums are the schema's hyphenated forms (`workspace-write`, `on-request`); the
+server rejects camelCased variants.
 
 ## Background runs and notifications
 
@@ -56,9 +69,10 @@ also notify. Clicking a notification only activates Aiflow — it never approves
 Click the attention icon to view the still-pending, exact request and choose Allow Once or
 Deny. If notifications are disabled, the attention icon and paused request remain usable.
 
-The app-server request names and response shapes are isolated in `CodexProtocol` and covered
-by mocks. They still require end-to-end verification against the installed Codex version
-before claiming live approval/input support.
+The app-server request names and response shapes are isolated in `CodexProtocol`. The
+handshake and turn lifecycle have been exercised against the installed Codex; the approval
+and question requests are decoded from the schema Codex generates but have not yet been
+raised by a live run, so those two paths remain unit-tested only.
 
 ## Permissions
 

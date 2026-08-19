@@ -100,11 +100,11 @@ final class WidgetViewModel: ObservableObject {
     /// MenuBarExtra's label is app-lifetime state, independent of its transient popover view.
     var menuBarSymbolName: String {
         switch runState {
-        case .ready: return "bolt.horizontal.circle"
-        case .launching, .running: return "bolt.horizontal.circle.fill"
+        case .ready, .confirming: return "bolt.horizontal.circle"
+        case .launching, .running, .respondingToRequest: return "bolt.horizontal.circle.fill"
         case .waitingForApproval, .waitingForInput: return "exclamationmark.circle.fill"
         case .completed: return "checkmark.circle.fill"
-        case .confirming: return "bolt.horizontal.circle"
+        case .cancelled: return "bolt.horizontal.circle"
         case .failed: return "xmark.circle.fill"
         }
     }
@@ -292,10 +292,19 @@ final class WidgetViewModel: ObservableObject {
             runState = .waitingForApproval(request)
             if !isPopoverVisible && notificationsAvailable { notifications.sendApproval(for: request) }
 
-        case .inputRequested(let id, let questionID, let question):
-            let request = UserQuestion(id: id, questionID: questionID, question: question, projectName: project.name)
+        case .inputRequested(let id, let questions):
+            let request = UserQuestion(
+                id: id, questions: questions, projectName: project.name)
             runState = .waitingForInput(request)
             if !isPopoverVisible && notificationsAvailable { notifications.sendQuestion(for: request) }
+
+        case .requestResolved(let id):
+            // Only the exact request we are blocked on may unblock us; a stale resolution
+            // for an earlier request must never clear a newer one.
+            guard case .respondingToRequest(let awaiting) = runState, awaiting == id else {
+                return
+            }
+            runState = .running(project)
 
         case .assistantMessage(let text):
             lastMessage = text
@@ -303,6 +312,10 @@ final class WidgetViewModel: ObservableObject {
         case .finished:
             runState = .completed(project)
             if !isPopoverVisible && notificationsAvailable { notifications.sendCompletion(for: project) }
+            finishSession()
+
+        case .cancelled:
+            runState = .cancelled(project)
             finishSession()
 
         case .failed(let detail):
@@ -313,32 +326,46 @@ final class WidgetViewModel: ObservableObject {
     }
 
     /// Sends the user's explicit decision. Aiflow never answers an approval on its own.
+    /// The run stays blocked on this exact request until Codex confirms it resolved it.
     func respondToApproval(allow: Bool) {
-        guard case .waitingForApproval(let request) = runState, let project = runningProject else {
+        guard case .waitingForApproval(let request) = runState, runningProject != nil else {
             return
         }
         notifications.removePendingRequest(id: request.id)
-        runState = .running(project)
+        runState = .respondingToRequest(request.id)
         Task { await client?.respondToApproval(request, allow: allow) }
     }
 
-    func respondToQuestion(_ answer: String) {
-        guard case .waitingForInput(let question) = runState, let project = runningProject else {
+    /// Answers every question in the request, keyed by its exact question id.
+    func respondToQuestion(_ answers: [String: String]) {
+        guard case .waitingForInput(let request) = runState, runningProject != nil else {
             return
         }
-        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        notifications.removePendingRequest(id: question.id)
-        runState = .running(project)
-        Task { await client?.respondToInput(question, answer: trimmed) }
+        // Every question must have an answer before the response is sent.
+        let complete = request.questions.allSatisfy { question in
+            !(answers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard complete else { return }
+
+        let trimmed = answers.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        notifications.removePendingRequest(id: request.id)
+        runState = .respondingToRequest(request.id)
+        Task { await client?.respondToInput(request, answers: trimmed) }
     }
 
     func cancelRun() {
-        Task { await client?.cancel() }
+        guard let project = runningProject else { return }
         if let request = pendingApproval { notifications.removePendingRequest(id: request.id) }
         if let question = pendingQuestion { notifications.removePendingRequest(id: question.id) }
-        runState = .ready
-        finishSession()
+        runState = .cancelled(project)
+        let cancelling = client
+        client = nil
+        runningProject = nil
+        // Let the client wind the turn down by its exact ids, then release it.
+        Task {
+            await cancelling?.cancel()
+            await cancelling?.stop()
+        }
     }
 
     private func finishSession() {

@@ -3,10 +3,15 @@ import Foundation
 /// Events the run engine hands back to the UI layer.
 enum CodexSessionEvent: Equatable {
     case started
-    case approvalRequested(id: CodexRequestID, kind: ApprovalRequest.Kind, summary: String, detail: String?, permissionProfile: Data?)
-    case inputRequested(id: CodexRequestID, questionID: String, question: String)
+    case approvalRequested(
+        id: CodexRequestID, kind: ApprovalRequest.Kind, summary: String, detail: String?,
+        permissionProfile: Data?)
+    case inputRequested(id: CodexRequestID, questions: [QuestionItem])
+    /// Codex confirmed it finished handling the server request with this exact id.
+    case requestResolved(CodexRequestID)
     case assistantMessage(String)
     case finished
+    case cancelled
     case failed(String)
 }
 
@@ -50,9 +55,20 @@ enum CodexProtocol {
                 "result": ["decision": allow ? "accept" : "decline"]]
     }
 
-    static func userInputResponse(_ question: UserQuestion, answer: String) -> [String: Any] {
-        ["jsonrpc": "2.0", "id": question.id.jsonValue,
-         "result": ["answers": [question.questionID: ["answers": [answer]]]]]
+    /// Builds the `answers` map keyed by every exact question id in the request. Question
+    /// ids come from the server; none are invented, and none are dropped.
+    static func userInputResponse(
+        _ request: UserQuestion, answers: [String: String]
+    ) -> [String: Any] {
+        var payload: [String: Any] = [:]
+        for question in request.questions {
+            let answer = answers[question.id] ?? ""
+            payload[question.id] = ["answers": [answer]]
+        }
+        return [
+            "jsonrpc": "2.0", "id": request.id.jsonValue,
+            "result": ["answers": payload],
+        ]
     }
 
     /// The id of a JSON-RPC *response* to one of our requests, if this object is one.
@@ -83,6 +99,31 @@ enum CodexProtocol {
     /// Approvals are always routed to the user. Never `"never"`, and never the
     /// auto-approving reviewer — Aiflow does not answer permission requests on its own.
     static let approvalPolicy = "on-request"
+
+    /// `requestUserInput` is an experimental method, so the client must opt in during
+    /// initialize or those requests are never delivered.
+    static func initializeParams() -> [String: Any] {
+        [
+            "clientInfo": ["name": "Aiflow", "version": "1.0"],
+            "capabilities": ["experimentalApi": true],
+        ]
+    }
+
+    /// Sent after the initialize response and before any other request.
+    static func initializedNotification() -> [String: Any] {
+        ["jsonrpc": "2.0", "method": "initialized", "params": [:]]
+    }
+
+    static func interruptParams(threadId: String, turnId: String) -> [String: Any] {
+        ["threadId": threadId, "turnId": turnId]
+    }
+
+    /// Pulls the turn id out of a `turn/start` result or a turn-bearing notification.
+    static func turnId(fromTurnPayload object: [String: Any]) -> String? {
+        let container = (object["result"] as? [String: Any]) ?? (object["params"] as? [String: Any])
+        guard let turn = container?["turn"] as? [String: Any] else { return nil }
+        return turn["id"] as? String
+    }
 
     /// Pure payload builders, so the safety-critical session parameters are unit testable
     /// without spawning Codex.
@@ -129,11 +170,9 @@ enum CodexProtocol {
                 )
             }
             if method == userInputMethod {
-                guard let first = (params["questions"] as? [[String: Any]])?.first,
-                    let questionID = first["id"] as? String,
-                    let question = first["question"] as? String
-                else { return nil }
-                return .inputRequested(id: id, questionID: questionID, question: question)
+                let questions = parseQuestions(params["questions"])
+                guard !questions.isEmpty else { return nil }
+                return .inputRequested(id: id, questions: questions)
             }
             return nil
         }
@@ -143,10 +182,32 @@ enum CodexProtocol {
             return .started
 
         case "turn/completed":
-            return .finished
+            // Not every completion is a success: the turn carries its own status, and a
+            // failed turn carries a structured error.
+            let turn = params["turn"] as? [String: Any] ?? [:]
+            switch turn["status"] as? String {
+            case "failed":
+                let error = turn["error"] as? [String: Any]
+                return .failed((error?["message"] as? String) ?? "Codex reported an error")
+            case "interrupted":
+                return .cancelled
+            case "inProgress":
+                return nil
+            default:
+                return .finished
+            }
+
+        case "serverRequest/resolved":
+            guard let id = requestID(from: params["requestId"]) else { return nil }
+            return .requestResolved(id)
 
         case "error":
-            let message = (params["message"] as? String) ?? "Codex reported an error"
+            // ErrorNotification nests the message under `error` (TurnError.message).
+            let nested = params["error"] as? [String: Any]
+            let message =
+                (nested?["message"] as? String)
+                ?? (params["message"] as? String)
+                ?? "Codex reported an error"
             return .failed(message)
 
         case "item/completed":
@@ -194,6 +255,32 @@ enum CodexProtocol {
         if let value = value as? String { return .string(value) }
         return nil
     }
+
+    /// Decodes every question in a requestUserInput request, preserving the schema's fields.
+    static func parseQuestions(_ raw: Any?) -> [QuestionItem] {
+        guard let entries = raw as? [[String: Any]] else { return [] }
+        return entries.compactMap { entry in
+            guard let id = entry["id"] as? String,
+                let question = entry["question"] as? String
+            else { return nil }
+
+            let options = (entry["options"] as? [[String: Any]] ?? []).compactMap {
+                option -> QuestionOption? in
+                guard let label = option["label"] as? String else { return nil }
+                return QuestionOption(
+                    label: label, description: option["description"] as? String ?? "")
+            }
+
+            return QuestionItem(
+                id: id,
+                header: entry["header"] as? String ?? "",
+                question: question,
+                options: options,
+                isOther: entry["isOther"] as? Bool ?? false,
+                isSecret: entry["isSecret"] as? Bool ?? false
+            )
+        }
+    }
 }
 
 /// Drives `codex app-server` over newline-delimited JSON-RPC on stdio.
@@ -217,6 +304,11 @@ actor CodexAppServerClient {
     private var pending: PendingRun?
     private var initializeRequestId: Int?
     private var threadStartRequestId: Int?
+    private var turnStartRequestId: Int?
+
+    /// Identifiers for the current active session only; cleared when the session ends.
+    private(set) var activeThreadId: String?
+    private(set) var activeTurnId: String?
 
     /// Starts a run and streams events. The continuation finishes when the turn completes,
     /// fails, or the process exits.
@@ -278,12 +370,13 @@ actor CodexAppServerClient {
             onEvent: onEvent
         )
 
-        // The handshake is strictly sequential: turn/start requires the threadId that only
-        // comes back in the thread/start response, so each step waits for the previous one.
+        // The handshake is strictly sequential:
+        //   initialize -> (response) -> initialized notification -> thread/start
+        //   -> (response carries threadId) -> turn/start
         initializeRequestId = takeRequestId()
         send([
             "jsonrpc": "2.0", "id": initializeRequestId!, "method": "initialize",
-            "params": ["clientInfo": ["name": "Aiflow", "version": "1.0"]],
+            "params": CodexProtocol.initializeParams(),
         ])
     }
 
@@ -301,6 +394,10 @@ actor CodexAppServerClient {
             }
 
             if responseId == initializeRequestId {
+                // The protocol requires the `initialized` notification before any further
+                // request; thread/start is only sent afterwards.
+                send(CodexProtocol.initializedNotification())
+
                 threadStartRequestId = takeRequestId()
                 send([
                     "jsonrpc": "2.0", "id": threadStartRequestId!, "method": "thread/start",
@@ -315,8 +412,10 @@ actor CodexAppServerClient {
                     pending.onEvent(.failed("Codex did not return a thread"))
                     return
                 }
+                activeThreadId = threadId
+                turnStartRequestId = takeRequestId()
                 send([
-                    "jsonrpc": "2.0", "id": takeRequestId(), "method": "turn/start",
+                    "jsonrpc": "2.0", "id": turnStartRequestId!, "method": "turn/start",
                     "params": CodexProtocol.turnStartParams(
                         threadId: threadId,
                         repositoryPath: pending.repositoryPath,
@@ -326,7 +425,18 @@ actor CodexAppServerClient {
                 ])
                 return
             }
+
+            if responseId == turnStartRequestId {
+                activeTurnId = CodexProtocol.turnId(fromTurnPayload: object) ?? activeTurnId
+                return
+            }
             return
+        }
+
+        // Notifications also carry the turn, which is the earliest reliable source of the
+        // turn id when turn/start's own response does not include it.
+        if activeTurnId == nil, let turnId = CodexProtocol.turnId(fromTurnPayload: object) {
+            activeTurnId = turnId
         }
 
         if let event = CodexProtocol.event(from: object) {
@@ -338,23 +448,57 @@ actor CodexAppServerClient {
         if let response = CodexProtocol.approvalResponse(request, allow: allow) { send(response) }
     }
 
-    func respondToInput(_ question: UserQuestion, answer: String) {
-        send(CodexProtocol.userInputResponse(question, answer: answer))
+    func respondToInput(_ request: UserQuestion, answers: [String: String]) {
+        send(CodexProtocol.userInputResponse(request, answers: answers))
     }
 
-    func cancel() {
-        send(["jsonrpc": "2.0", "id": takeRequestId(), "method": "turn/interrupt", "params": [:]])
-        process?.terminate()
+    /// Interrupts the active turn by its exact ids and lets the server wind the turn down —
+    /// `turn/completed` with `interrupted` status is what actually confirms cancellation.
+    /// The process is only terminated if the server stops responding, and only ever this
+    /// session's own child process.
+    func cancel(terminateAfter: Duration = .seconds(5)) {
+        guard let threadId = activeThreadId, let turnId = activeTurnId else {
+            // Nothing was started yet, so there is no turn to wind down.
+            terminateOwnProcess()
+            stop()
+            return
+        }
+
+        send([
+            "jsonrpc": "2.0", "id": takeRequestId(), "method": "turn/interrupt",
+            "params": CodexProtocol.interruptParams(threadId: threadId, turnId: turnId),
+        ])
+
+        // Bounded fallback: if the server never confirms, stop waiting on it.
+        Task { [weak self] in
+            try? await Task.sleep(for: terminateAfter)
+            await self?.terminateIfStillRunning()
+        }
+    }
+
+    private func terminateIfStillRunning() {
+        guard process != nil else { return }
+        terminateOwnProcess()
+        pending?.onEvent(.cancelled)
         stop()
+    }
+
+    private func terminateOwnProcess() {
+        // Only this session's child process is ever signalled.
+        if let process, process.isRunning { process.terminate() }
     }
 
     func stop() {
         try? stdinHandle?.close()
         stdinHandle = nil
+        terminateOwnProcess()
         process = nil
         pending = nil
         initializeRequestId = nil
         threadStartRequestId = nil
+        turnStartRequestId = nil
+        activeThreadId = nil
+        activeTurnId = nil
     }
 
     private func takeRequestId() -> Int {

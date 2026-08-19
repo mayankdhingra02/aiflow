@@ -334,30 +334,100 @@ private struct ApprovalSheet: View {
     }
 }
 
+/// Answers every question in one request. A request may carry several questions, each
+/// either a set of options or free text, and all of them must be answered.
 private struct QuestionSheet: View {
     let question: UserQuestion
     @ObservedObject var viewModel: WidgetViewModel
-    @State private var answer = ""
+    @State private var answers: [String: String] = [:]
+
+    private var isComplete: Bool {
+        question.questions.allSatisfy {
+            !(answers[$0.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Codex asks").font(.headline)
-            Text(question.question).font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(question.questions.count > 1 ? "Codex asks a few things" : "Codex asks")
+                .font(.headline)
 
-            TextField("Your answer", text: $answer)
-                .textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(question.questions) { item in
+                        questionView(item)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
 
             HStack {
                 Button("Cancel Run") { viewModel.cancelRun() }
                 Spacer()
-                Button("Send") { viewModel.respondToQuestion(answer) }
+                Button("Send") { viewModel.respondToQuestion(answers) }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(answer.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!isComplete)
             }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 340)
+    }
+
+    @ViewBuilder
+    private func questionView(_ item: QuestionItem) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if !item.header.isEmpty {
+                Text(item.header).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(item.question).font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !item.options.isEmpty {
+                ForEach(item.options) { option in
+                    Button {
+                        answers[item.id] = option.label
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(
+                                systemName: answers[item.id] == option.label
+                                    ? "largecircle.fill.circle" : "circle")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(option.label).font(.caption)
+                                if !option.description.isEmpty {
+                                    Text(option.description)
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Free text when there are no options, or when "Other" is allowed alongside them.
+            if item.allowsFreeForm {
+                let isOtherField = !item.options.isEmpty
+                if item.isSecret {
+                    SecureField(
+                        isOtherField ? "Other…" : "Your answer",
+                        text: binding(for: item.id)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                } else {
+                    TextField(
+                        isOtherField ? "Other…" : "Your answer",
+                        text: binding(for: item.id)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+            }
+        }
+    }
+
+    private func binding(for id: String) -> Binding<String> {
+        Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0 })
     }
 }
 
