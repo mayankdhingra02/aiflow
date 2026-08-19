@@ -1,0 +1,481 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97E859A74BB6436A2CB1B244 /* NotificationManager.swift */; };
+		074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */; };
+		0F740479FE61F4333251DA36 /* AiflowMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */; };
+		1214FC6B9222CF42B4B1CBAE /* GitRepositoryValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142326CA5A58EB20B76E3633 /* GitRepositoryValidator.swift */; };
+		2F83EE22ED408AFE85DBDC19 /* ChatURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */; };
+		44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */; };
+		538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */; };
+		55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */; };
+		6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */; };
+		796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */; };
+		7F117E936402AB6825198EDD /* CodexLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */; };
+		84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */; };
+		851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */; };
+		9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */; };
+		AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F25D8E351B8F533ADD42379 /* Models.swift */; };
+		B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */; };
+		B986C6114FE3410766E7B75F /* WidgetViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */; };
+		CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */; };
+		CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */; };
+		E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF41C3133082121F9E0B731 /* ChatURLTests.swift */; };
+		FD2E512C9A4E9344309CC60B /* AiflowCLITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D83A2FF4F2987C6BD0DF5ED9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FEC64B78ADC354A8037EEDD7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 65D4FF1FCA9A27BD8CC7C26C;
+			remoteInfo = AiflowMenuBar;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStore.swift; sourceTree = "<group>"; };
+		142326CA5A58EB20B76E3633 /* GitRepositoryValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryValidator.swift; sourceTree = "<group>"; };
+		1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocator.swift; sourceTree = "<group>"; };
+		1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMapTests.swift; sourceTree = "<group>"; };
+		24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AiflowMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitProjectValidationTests.swift; sourceTree = "<group>"; };
+		3EF41C3133082121F9E0B731 /* ChatURLTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURLTests.swift; sourceTree = "<group>"; };
+		45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
+		491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowCLI.swift; sourceTree = "<group>"; };
+		5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURL.swift; sourceTree = "<group>"; };
+		5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMap.swift; sourceTree = "<group>"; };
+		74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStoreTests.swift; sourceTree = "<group>"; };
+		7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalStateTests.swift; sourceTree = "<group>"; };
+		7F25D8E351B8F533ADD42379 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexCommandTests.swift; sourceTree = "<group>"; };
+		8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowMenuBarApp.swift; sourceTree = "<group>"; };
+		97E859A74BB6436A2CB1B244 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectButtonBehaviorTests.swift; sourceTree = "<group>"; };
+		9D73842CA3AF2CA8E0D3A625 /* AiflowMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AiflowMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLDetector.swift; sourceTree = "<group>"; };
+		BCE999D706097DEEC4AFADD5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowCLITests.swift; sourceTree = "<group>"; };
+		DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViewModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		774B39965A894C46F1AEA741 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				9D73842CA3AF2CA8E0D3A625 /* AiflowMenuBar.app */,
+				27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A3568B550AFE3E66B34F7A8C = {
+			isa = PBXGroup;
+			children = (
+				F8198B7D2C67F60C5E574180 /* AiflowMenuBar */,
+				C25AE5B96E6B6AA0A33F8C68 /* AiflowMenuBarTests */,
+				774B39965A894C46F1AEA741 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C25AE5B96E6B6AA0A33F8C68 /* AiflowMenuBarTests */ = {
+			isa = PBXGroup;
+			children = (
+				CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */,
+				7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */,
+				1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */,
+				3EF41C3133082121F9E0B731 /* ChatURLTests.swift */,
+				7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */,
+				30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */,
+				985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */,
+				74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */,
+			);
+			path = AiflowMenuBarTests;
+			sourceTree = "<group>";
+		};
+		F8198B7D2C67F60C5E574180 /* AiflowMenuBar */ = {
+			isa = PBXGroup;
+			children = (
+				491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */,
+				8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */,
+				B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */,
+				5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */,
+				5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */,
+				45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */,
+				1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */,
+				142326CA5A58EB20B76E3633 /* GitRepositoryValidator.swift */,
+				BCE999D706097DEEC4AFADD5 /* Info.plist */,
+				24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */,
+				7F25D8E351B8F533ADD42379 /* Models.swift */,
+				97E859A74BB6436A2CB1B244 /* NotificationManager.swift */,
+				077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */,
+				DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */,
+			);
+			path = AiflowMenuBar;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		65D4FF1FCA9A27BD8CC7C26C /* AiflowMenuBar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 38CBF78437327C5BB7042040 /* Build configuration list for PBXNativeTarget "AiflowMenuBar" */;
+			buildPhases = (
+				7BE5567CC55F829BF29F92B4 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AiflowMenuBar;
+			packageProductDependencies = (
+			);
+			productName = AiflowMenuBar;
+			productReference = 9D73842CA3AF2CA8E0D3A625 /* AiflowMenuBar.app */;
+			productType = "com.apple.product-type.application";
+		};
+		82603FF17C58CBB8FE38EF92 /* AiflowMenuBarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E9AADC0DB0E527575BBA7888 /* Build configuration list for PBXNativeTarget "AiflowMenuBarTests" */;
+			buildPhases = (
+				E99EE296CF60A59AF1816C7D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				689185BB34615D00418B7AD2 /* PBXTargetDependency */,
+			);
+			name = AiflowMenuBarTests;
+			packageProductDependencies = (
+			);
+			productName = AiflowMenuBarTests;
+			productReference = 27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FEC64B78ADC354A8037EEDD7 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					65D4FF1FCA9A27BD8CC7C26C = {
+						DevelopmentTeam = "";
+					};
+					82603FF17C58CBB8FE38EF92 = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = ECA9373509C5C9FDCEB54982 /* Build configuration list for PBXProject "AiflowMenuBar" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A3568B550AFE3E66B34F7A8C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 774B39965A894C46F1AEA741 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				65D4FF1FCA9A27BD8CC7C26C /* AiflowMenuBar */,
+				82603FF17C58CBB8FE38EF92 /* AiflowMenuBarTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7BE5567CC55F829BF29F92B4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */,
+				0F740479FE61F4333251DA36 /* AiflowMenuBarApp.swift in Sources */,
+				44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */,
+				84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */,
+				2F83EE22ED408AFE85DBDC19 /* ChatURL.swift in Sources */,
+				851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */,
+				7F117E936402AB6825198EDD /* CodexLocator.swift in Sources */,
+				1214FC6B9222CF42B4B1CBAE /* GitRepositoryValidator.swift in Sources */,
+				9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */,
+				AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */,
+				05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */,
+				074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */,
+				B986C6114FE3410766E7B75F /* WidgetViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E99EE296CF60A59AF1816C7D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FD2E512C9A4E9344309CC60B /* AiflowCLITests.swift in Sources */,
+				538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */,
+				CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */,
+				E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */,
+				CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */,
+				6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */,
+				55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */,
+				796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		689185BB34615D00418B7AD2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 65D4FF1FCA9A27BD8CC7C26C /* AiflowMenuBar */;
+			targetProxy = D83A2FF4F2987C6BD0DF5ED9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		02F930F1FFE3724C97EABE07 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		072E6FEF8D98958144F3F384 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AiflowMenuBar/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.aiflow.menubar;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		426B0C85D0EBD37186B905F6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AiflowMenuBar/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.aiflow.menubar;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		626B646E01BECCC0271E9837 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		6476EC0901C04B0D84B6B72D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.aiflow.menubar.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AiflowMenuBar.app/Contents/MacOS/AiflowMenuBar";
+			};
+			name = Release;
+		};
+		A2DA690E09EE65FA4552636E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.aiflow.menubar.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AiflowMenuBar.app/Contents/MacOS/AiflowMenuBar";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		38CBF78437327C5BB7042040 /* Build configuration list for PBXNativeTarget "AiflowMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				426B0C85D0EBD37186B905F6 /* Debug */,
+				072E6FEF8D98958144F3F384 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E9AADC0DB0E527575BBA7888 /* Build configuration list for PBXNativeTarget "AiflowMenuBarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A2DA690E09EE65FA4552636E /* Debug */,
+				6476EC0901C04B0D84B6B72D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		ECA9373509C5C9FDCEB54982 /* Build configuration list for PBXProject "AiflowMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				02F930F1FFE3724C97EABE07 /* Debug */,
+				626B646E01BECCC0271E9837 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FEC64B78ADC354A8037EEDD7 /* Project object */;
+}

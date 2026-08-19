@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 import shutil
 import sys
@@ -37,8 +38,10 @@ from aiflow.git import (
 )
 from aiflow.models import (
     CodexRunSpec,
+    ModelRole,
     PacketStage,
     ProjectRecord,
+    ReasoningEffort,
     RunHistoryStatus,
     RunKind,
     TaskStatus,
@@ -96,6 +99,18 @@ def _fail(
 ) -> None:
     console.print(f"[bold red]Error:[/bold red] {message}")
     raise typer.Exit(code)
+
+
+def _print_json(
+    payload: object,
+) -> None:
+    typer.echo(
+        json.dumps(
+            payload,
+            indent=2,
+            default=str,
+        )
+    )
 
 
 def _codex_failure_recovery_message(
@@ -250,9 +265,21 @@ def register(
 
 
 @app.command("projects")
-def list_projects() -> None:
+def list_projects(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Print registered projects as JSON."),
+        ),
+    ] = False,
+) -> None:
     """List registered projects."""
     projects = _db().list_projects()
+
+    if json_output:
+        _print_json([project.model_dump(mode="json") for project in projects])
+        return
 
     if not projects:
         console.print(
@@ -276,6 +303,50 @@ def list_projects() -> None:
         )
 
     console.print(table)
+
+
+@app.command("models")
+def list_models(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Print the model and reasoning options as JSON."),
+        ),
+    ] = False,
+) -> None:
+    """List the Codex model roles and reasoning efforts Aiflow supports."""
+    models = [
+        {
+            "role": role.value,
+            "model_id": MODEL_BY_ROLE[role.value],
+        }
+        for role in ModelRole
+    ]
+
+    efforts = [effort.value for effort in ReasoningEffort]
+
+    if json_output:
+        _print_json(
+            {
+                "models": models,
+                "reasoning_efforts": efforts,
+                "default_sandbox": (CodexRunSpec.model_fields["sandbox"].default),
+            }
+        )
+        return
+
+    table = Table(title="Aiflow Codex models")
+
+    table.add_column("Role")
+    table.add_column("Model ID")
+
+    for entry in models:
+        table.add_row(entry["role"], entry["model_id"])
+
+    console.print(table)
+
+    console.print(f"Reasoning efforts: {', '.join(efforts)}")
 
 
 @app.command()
@@ -416,9 +487,20 @@ def list_tasks(
             help=("Maximum number of recent tasks to show."),
         ),
     ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Print recent tasks as JSON."),
+        ),
+    ] = False,
 ) -> None:
     """List recent tasks."""
     tasks = _db().list_tasks(limit=limit)
+
+    if json_output:
+        _print_json([task.model_dump(mode="json") for task in tasks])
+        return
 
     if not tasks:
         console.print("No tasks have been created.")
@@ -1303,6 +1385,13 @@ def show(
             help="Task ID to display.",
         ),
     ],
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Print the task as JSON."),
+        ),
+    ] = False,
 ) -> None:
     """Show one task and its artifact paths."""
     db = _db()
@@ -1313,6 +1402,32 @@ def show(
         _fail(f"unknown task ID: {task_id}")
 
     project = db.get_project(task.project_id)
+
+    if json_output:
+        planner_prompt_path = task.task_dir / "planner-prompt.md"
+
+        latest_review = db.latest_review_history(task.id)
+
+        review_prompt_path = (
+            latest_review.artifact_dir / "review-prompt.md" if latest_review is not None else None
+        )
+
+        payload = task.model_dump(mode="json")
+
+        payload["project_name"] = project.name if project else None
+
+        payload["planner_prompt_path"] = (
+            str(planner_prompt_path) if planner_prompt_path.exists() else None
+        )
+
+        payload["review_prompt_path"] = (
+            str(review_prompt_path)
+            if review_prompt_path is not None and review_prompt_path.exists()
+            else None
+        )
+
+        _print_json(payload)
+        return
 
     console.print(
         Panel.fit(

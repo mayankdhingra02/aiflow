@@ -1,0 +1,58 @@
+name: AiflowMenuBar
+options:
+  bundleIdPrefix: local.aiflow
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+    DEVELOPMENT_TEAM: ""
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  AiflowMenuBar:
+    type: application
+    platform: macOS
+    sources:
+      - path: AiflowMenuBar
+    info:
+      path: AiflowMenuBar/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: Aiflow
+        NSHumanReadableCopyright: ""
+        NSAppleEventsUsageDescription:
+          Aiflow reads the active tab's URL from your browser so it can match the
+          ChatGPT conversation to a local project. It never reads page content.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.aiflow.menubar
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+  AiflowMenuBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: AiflowMenuBarTests
+    dependencies:
+      - target: AiflowMenuBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.aiflow.menubar.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  AiflowMenuBar:
+    build:
+      targets:
+        AiflowMenuBar: all
+        AiflowMenuBarTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AiflowMenuBarTests

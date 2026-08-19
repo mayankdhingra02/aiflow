@@ -1,0 +1,415 @@
+import XCTest
+
+@testable import AiflowMenuBar
+
+/// Protocol-level tests for the app-server integration. These exercise decoding of real
+/// `ServerRequest`/`ServerNotification` method names taken from the schema Codex itself
+/// generates (`codex app-server generate-json-schema`).
+final class CodexProtocolTests: XCTestCase {
+    private func decode(_ json: String) -> CodexSessionEvent? {
+        let object =
+            (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        return CodexProtocol.event(from: object)
+    }
+
+    func testCommandApprovalRequestBecomesApprovalEvent() {
+        let event = decode(
+            """
+            {"id":7,"method":"item/commandExecution/requestApproval",
+             "params":{"command":"npm install left-pad","reason":"Requires network access"}}
+            """)
+
+        XCTAssertEqual(
+            event,
+            .approvalRequested(
+                id: .integer(7), kind: .commandExecution, summary: "npm install left-pad",
+                detail: "Requires network access", permissionProfile: nil))
+    }
+
+    func testCommandApprovalAcceptsArrayCommandForm() {
+        let event = decode(
+            """
+            {"id":8,"method":"item/commandExecution/requestApproval",
+             "params":{"command":["git","push"]}}
+            """)
+
+        guard case .approvalRequested(_, _, let summary, _, _) = event else {
+            return XCTFail("expected an approval event")
+        }
+        XCTAssertEqual(summary, "git push")
+    }
+
+    func testFileChangeApprovalListsChangedFiles() {
+        let event = decode(
+            """
+            {"id":9,"method":"item/fileChange/requestApproval",
+             "params":{"fileChanges":{"src/b.swift":{},"src/a.swift":{}}}}
+            """)
+
+        guard case .approvalRequested(let id, let kind, let summary, _, _) = event else {
+            return XCTFail("expected an approval event")
+        }
+        XCTAssertEqual(id, .integer(9))
+        XCTAssertEqual(kind, .fileChange)
+        XCTAssertEqual(summary, "src/a.swift, src/b.swift")
+    }
+
+    func testPermissionsApprovalIsRecognised() {
+        let event = decode(
+            """
+            {"id":10,"method":"item/permissions/requestApproval",
+             "params":{"reason":"Network access"}}
+            """)
+
+        guard case .approvalRequested(_, let kind, let summary, _, _) = event else {
+            return XCTFail("expected an approval event")
+        }
+        XCTAssertEqual(kind, .permissions)
+        XCTAssertEqual(summary, "Network access")
+    }
+
+    func testUserInputRequestBecomesInputEvent() {
+    let event = decode(
+        """
+        {"id":11,"method":"item/tool/requestUserInput",
+         "params":{"questions":[
+             {
+                 "id":"answer",
+                 "question":"Should I update the migration as well?"
+             }
+         ]}}
+        """)
+
+    XCTAssertEqual(
+        event,
+        .inputRequested(
+            id: .integer(11),
+            questionID: "answer",
+            question: "Should I update the migration as well?"
+        )
+    )
+}
+
+    func testTurnLifecycleEvents() {
+        XCTAssertEqual(decode(#"{"method":"turn/started","params":{}}"#), .started)
+        XCTAssertEqual(decode(#"{"method":"turn/completed","params":{}}"#), .finished)
+        XCTAssertEqual(
+            decode(#"{"method":"error","params":{"message":"boom"}}"#), .failed("boom"))
+    }
+
+    func testAssistantMessageIsSurfaced() {
+        let event = decode(
+            """
+            {"method":"item/completed","params":{"item":{"type":"agentMessage","text":"Done."}}}
+            """)
+
+        XCTAssertEqual(event, .assistantMessage("Done."))
+    }
+
+    func testNonAssistantItemsAreIgnored() {
+        XCTAssertNil(
+            decode(
+                """
+                {"method":"item/completed",
+                 "params":{"item":{"type":"commandExecution","text":"ls"}}}
+                """))
+    }
+
+    func testUnknownNotificationsAreIgnoredRatherThanGuessed() {
+        XCTAssertNil(decode(#"{"method":"item/reasoning/textDelta","params":{"delta":"x"}}"#))
+        XCTAssertNil(decode(#"{"method":"turn/plan/updated","params":{}}"#))
+        XCTAssertNil(decode(#"{"id":1,"result":{"userAgent":"x"}}"#))
+    }
+
+    /// An unrecognised server->client request must not be treated as an approval, because
+    /// silently ignoring it is safe while guessing an approval would not be.
+    func testUnknownServerRequestIsNotTreatedAsApproval() {
+        XCTAssertNil(decode(#"{"id":12,"method":"attestation/generate","params":{}}"#))
+    }
+
+    func testApprovalResponsesCarryExplicitDecisions() {
+        let allow = CodexProtocol.approvalResponse(ApprovalRequest(id: .integer(3), kind: .commandExecution, summary: "x", detail: nil, projectName: "p", permissionProfile: nil), allow: true)
+        let deny = CodexProtocol.approvalResponse(ApprovalRequest(id: .integer(4), kind: .commandExecution, summary: "x", detail: nil, projectName: "p", permissionProfile: nil), allow: false)
+
+        XCTAssertEqual((allow?["result"] as? [String: Any])?["decision"] as? String, "accept")
+        XCTAssertEqual(allow?["id"] as? Int, 3)
+        XCTAssertEqual((deny?["result"] as? [String: Any])?["decision"] as? String, "decline")
+        XCTAssertEqual(deny?["id"] as? Int, 4)
+    }
+
+    func testUserInputResponseCarriesTheAnswer() {
+        let question = UserQuestion(id: .integer(5), questionID: "auth-flow", question: "Which?", projectName: "p")
+        let response = CodexProtocol.userInputResponse(question, answer: "Yes, update it")
+
+        XCTAssertEqual(response["id"] as? Int, 5)
+        let answers = (response["result"] as? [String: Any])?["answers"] as? [String: Any]
+        XCTAssertEqual(((answers?["auth-flow"] as? [String: Any])?["answers"] as? [String])?.first, "Yes, update it")
+    }
+
+    func testDestructiveRequestsPreferDeny() {
+        let risky = ApprovalRequest(
+            id: .integer(1), kind: .commandExecution, summary: "rm -rf build", detail: nil,
+            projectName: "ef", permissionProfile: nil)
+        let ordinary = ApprovalRequest(
+            id: .integer(2), kind: .commandExecution, summary: "ls -la", detail: nil, projectName: "ef", permissionProfile: nil)
+
+        XCTAssertTrue(risky.prefersDeny)
+        XCTAssertFalse(ordinary.prefersDeny)
+    }
+}
+
+/// `turn/start` requires the threadId returned by `thread/start`, so responses must be
+/// distinguished from notifications and the thread id pulled out of the result.
+final class CodexHandshakeTests: XCTestCase {
+    private func object(_ json: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+    }
+
+    func testResponseIsDistinguishedFromNotification() {
+        XCTAssertEqual(
+            CodexProtocol.responseId(from: object(#"{"id":1,"result":{"ok":true}}"#)), 1)
+        XCTAssertNil(
+            CodexProtocol.responseId(from: object(#"{"method":"turn/started","params":{}}"#)))
+    }
+
+    /// A server->client *request* also carries an id, but it must never be mistaken for a
+    /// response to one of ours — it has a method and expects an answer.
+    func testServerRequestIsNotMistakenForAResponse() {
+        let approval = object(
+            #"{"id":9,"method":"item/commandExecution/requestApproval","params":{}}"#)
+
+        XCTAssertNil(CodexProtocol.responseId(from: approval))
+        XCTAssertNotNil(CodexProtocol.event(from: approval))
+    }
+
+    func testThreadIdIsExtractedFromThreadStartResult() {
+        let response = object(
+            #"{"id":2,"result":{"thread":{"id":"01a018ac-339a-7462-a2cc-351e7e1386a7"}}}"#)
+
+        XCTAssertEqual(
+            CodexProtocol.threadId(fromThreadStartResult: response),
+            "01a018ac-339a-7462-a2cc-351e7e1386a7")
+    }
+
+    func testMissingThreadIdIsReportedRatherThanAssumed() {
+        XCTAssertNil(
+            CodexProtocol.threadId(fromThreadStartResult: object(#"{"id":2,"result":{}}"#)))
+    }
+
+    func testErrorResponsesAreSurfaced() {
+        let response = object(#"{"id":2,"error":{"code":-32602,"message":"bad params"}}"#)
+
+        XCTAssertEqual(CodexProtocol.responseId(from: response), 2)
+        XCTAssertEqual(CodexProtocol.errorMessage(from: response), "bad params")
+        XCTAssertNil(CodexProtocol.errorMessage(from: object(#"{"id":2,"result":{}}"#)))
+    }
+}
+
+final class LineBufferTests: XCTestCase {
+    func testSplitsCompleteLines() {
+        let buffer = LineBuffer()
+
+        XCTAssertEqual(buffer.append(Data("{\"a\":1}\n{\"b\":2}\n".utf8)),
+                       ["{\"a\":1}", "{\"b\":2}"])
+    }
+
+    func testHoldsPartialLineUntilNewlineArrives() {
+        let buffer = LineBuffer()
+
+        XCTAssertEqual(buffer.append(Data("{\"a\":".utf8)), [])
+        XCTAssertEqual(buffer.append(Data("1}\n".utf8)), ["{\"a\":1}"])
+    }
+
+    func testSkipsBlankLines() {
+        let buffer = LineBuffer()
+
+        XCTAssertEqual(buffer.append(Data("\n\n{\"a\":1}\n".utf8)), ["{\"a\":1}"])
+    }
+}
+
+@MainActor
+final class ApprovalStateTests: XCTestCase {
+    private final class MockNotifications: NotificationManaging {
+        var approvals: [ApprovalRequest] = []
+        var questions: [UserQuestion] = []
+        var completions: [SavedProject] = []
+        var failures: [SavedProject?] = []
+        var removed: [Int] = []
+        var authorization = true
+
+        func prepareForRun() async -> Bool { authorization }
+        func sendApproval(for request: ApprovalRequest) { approvals.append(request) }
+        func sendQuestion(for question: UserQuestion) { questions.append(question) }
+        func sendCompletion(for project: SavedProject) { completions.append(project) }
+        func sendFailure(for project: SavedProject?) { failures.append(project) }
+        func removePendingRequest(id: CodexRequestID) { if case .integer(let value) = id { removed.append(value) } }
+    }
+
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+    private var directory: URL!
+
+    override func setUp() {
+        super.setUp()
+        let unique = UUID().uuidString
+        suiteName = "aiflow.tests.approval.\(unique)"
+        defaults = UserDefaults(suiteName: suiteName)
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aiflow-approval-\(unique)")
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: directory)
+        defaults.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func makeViewModel(notifications: MockNotifications? = nil) -> WidgetViewModel {
+        let notificationManager = notifications ?? MockNotifications()
+        return WidgetViewModel(
+            store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
+            map: ChatProjectMap(fileURL: directory.appendingPathComponent("map.json")),
+            defaults: defaults,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: notificationManager
+        )
+    }
+
+    private let project = SavedProject(name: "ef", path: "/repos/ef")
+
+    func testApprovalEventMovesToWaitingForApproval() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
+            project: project)
+
+        XCTAssertEqual(viewModel.pendingApproval?.id, .integer(3))
+        XCTAssertEqual(viewModel.pendingApproval?.summary, "npm i")
+        // A run awaiting approval still counts as busy, so no second run can start.
+        XCTAssertTrue(viewModel.runState.isBusy)
+    }
+
+    func testInputEventMovesToWaitingForInput() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(
+            .inputRequested(id: .integer(4), questionID: "api", question: "Which API version?"), project: project)
+
+        XCTAssertEqual(viewModel.pendingQuestion?.id, .integer(4))
+        XCTAssertEqual(viewModel.pendingQuestion?.question, "Which API version?")
+    }
+
+    func testNoApprovalIsPendingUntilCodexAsks() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        // Nothing is auto-approved: without a request there is simply no pending decision.
+        XCTAssertNil(viewModel.pendingApproval)
+        XCTAssertNil(viewModel.pendingQuestion)
+    }
+
+    func testFinishedEventCompletesTheRun() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(.assistantMessage("All done."), project: project)
+        viewModel.handleEventForTesting(.finished, project: project)
+
+        XCTAssertEqual(viewModel.runState, .completed(project))
+        XCTAssertEqual(viewModel.lastMessage, "All done.")
+        XCTAssertFalse(viewModel.runState.isBusy)
+    }
+
+    func testFailureEventFailsTheRun() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(.failed("Codex exited with status 1"), project: project)
+
+        XCTAssertEqual(
+            viewModel.runState,
+            .failed(project: project, message: "Codex exited with status 1"))
+        XCTAssertFalse(viewModel.runState.isBusy)
+    }
+
+    func testRunStateBusyRules() {
+        XCTAssertFalse(RunState.ready.isBusy)
+        XCTAssertFalse(RunState.completed(project).isBusy)
+        XCTAssertFalse(RunState.failed(project: project, message: "x").isBusy)
+        XCTAssertFalse(RunState.confirming(project).isBusy)
+        XCTAssertTrue(RunState.launching(project).isBusy)
+        XCTAssertTrue(RunState.running(project).isBusy)
+    }
+
+    func testClosedPopoverNotifiesForEveryIndependentApproval() {
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications)
+        viewModel.enterRunningForTesting(project)
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
+            project: project)
+        viewModel.respondToApproval(allow: true)
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(4), kind: .permissions, summary: "Network", detail: nil, permissionProfile: nil),
+            project: project)
+
+        XCTAssertEqual(notifications.approvals.map(\.id), [.integer(3), .integer(4)])
+        XCTAssertEqual(notifications.removed, [3])
+    }
+
+    func testVisiblePopoverDoesNotDuplicateApprovalNotification() {
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications)
+        viewModel.enterRunningForTesting(project)
+        viewModel.popoverDidBecomeVisible()
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
+            project: project)
+
+        XCTAssertTrue(notifications.approvals.isEmpty)
+    }
+
+    func testDisabledNotificationsDoNotStopApprovalState() {
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications)
+        viewModel.enterRunningForTesting(project)
+        viewModel.setNotificationsAvailableForTesting(false)
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
+            project: project)
+
+        XCTAssertEqual(viewModel.pendingApproval?.id, .integer(3))
+        XCTAssertTrue(notifications.approvals.isEmpty)
+        XCTAssertEqual(viewModel.menuBarSymbolName, "exclamationmark.circle.fill")
+    }
+
+    func testCompletionAndFailureNotifyOnlyWhenPopoverIsHidden() {
+        let notifications = MockNotifications()
+        let completed = makeViewModel(notifications: notifications)
+        completed.enterRunningForTesting(project)
+        completed.handleEventForTesting(.finished, project: project)
+        XCTAssertEqual(notifications.completions, [project])
+
+        let failed = makeViewModel(notifications: notifications)
+        failed.enterRunningForTesting(project)
+        failed.popoverDidBecomeVisible()
+        failed.handleEventForTesting(.failed("boom"), project: project)
+        XCTAssertTrue(notifications.failures.isEmpty)
+    }
+
+    func testCancellationReturnsToReadyAndDropsLateEvents() {
+        let viewModel = makeViewModel()
+        viewModel.enterRunningForTesting(project)
+        viewModel.cancelRun()
+        viewModel.handleEventForTesting(.failed("late"), project: project)
+
+        XCTAssertEqual(viewModel.runState, .ready)
+    }
+}
