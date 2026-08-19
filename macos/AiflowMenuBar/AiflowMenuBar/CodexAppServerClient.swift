@@ -98,9 +98,15 @@ enum CodexProtocol {
     /// The sandbox this app always runs under. Never `danger-full-access`.
     static let sandbox = "workspace-write"
 
-    /// Approvals are always routed to the user. Never `"never"`, and never the
-    /// auto-approving reviewer — Aiflow does not answer permission requests on its own.
+    /// Approvals are always routed to the user. Never `"never"` — Aiflow does not answer
+    /// permission requests on its own.
     static let approvalPolicy = "on-request"
+
+    /// *Who* reviews an approval request, which is a separate setting from *when* one is
+    /// raised. Sent explicitly so a reviewer configured elsewhere cannot silently take the
+    /// decision: `auto_review` (and its legacy alias `guardian_subagent`) let a subagent
+    /// approve or deny on the user's behalf, which would break the widget's manual promise.
+    static let approvalsReviewer = "user"
 
     /// `requestUserInput` is an experimental method, so the client must opt in during
     /// initialize or those requests are never delivered.
@@ -135,6 +141,7 @@ enum CodexProtocol {
             "model": modelId,
             "sandbox": sandbox,
             "approvalPolicy": approvalPolicy,
+            "approvalsReviewer": approvalsReviewer,
         ]
     }
 

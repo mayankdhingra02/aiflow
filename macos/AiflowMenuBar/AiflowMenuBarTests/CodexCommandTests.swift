@@ -179,12 +179,26 @@ final class CodexSessionParameterTests: XCTestCase {
         XCTAssertFalse(describe(turnParams()).contains("danger"))
     }
 
-    /// The approval policy must route requests to the user — never "never" (silently
-    /// proceed) and never an auto-approving reviewer.
+    /// *When* an approval is raised. "never" would let Codex proceed silently.
     func testApprovalPolicyAsksTheUser() {
         XCTAssertEqual(threadParams()["approvalPolicy"] as? String, "on-request")
         XCTAssertNotEqual(CodexProtocol.approvalPolicy, "never")
-        XCTAssertNil(threadParams()["approvalsReviewer"])
+    }
+
+    /// *Who* decides — a separate setting. It is sent explicitly so a reviewer configured
+    /// elsewhere cannot take the decision on the user's behalf.
+    func testApprovalsReviewerIsAlwaysTheUser() {
+        XCTAssertEqual(threadParams()["approvalsReviewer"] as? String, "user")
+        XCTAssertEqual(CodexProtocol.approvalsReviewer, "user")
+    }
+
+    func testApprovalsReviewerIsNeverAnAutomaticReviewer() {
+        XCTAssertNotEqual(CodexProtocol.approvalsReviewer, "auto_review")
+        XCTAssertNotEqual(CodexProtocol.approvalsReviewer, "guardian_subagent")
+
+        let reviewer = threadParams()["approvalsReviewer"] as? String
+        XCTAssertNotEqual(reviewer, "auto_review")
+        XCTAssertNotEqual(reviewer, "guardian_subagent")
     }
 
     func testNoBypassOrFullAutoFlagIsEverSent() {
