@@ -4,6 +4,7 @@ import { AiflowViewProvider } from './aiflowView';
 import {
     AiflowState,
     BridgeEvent,
+    admitRun,
     initialState,
     parseExecutionRequest,
     reduce,
@@ -60,9 +61,17 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!request) {
             return; // malformed execution requests are ignored, never guessed at
         }
-        if (activeWorkerRunId) {
-            client.workerFailed(request.runId, 'another Aiflow run is already executing');
-            return;
+        switch (admitRun(activeWorkerRunId, request.runId)) {
+            case 'ignore-duplicate':
+                // The same run redelivered — typically a reconnect replaying the request.
+                // Starting a second Codex turn, or reporting a failure, would break the run
+                // that is currently succeeding.
+                return;
+            case 'reject-busy':
+                client.workerFailed(request.runId, 'another Aiflow run is already executing');
+                return;
+            case 'start':
+                break;
         }
 
         activeWorkerRunId = request.runId;

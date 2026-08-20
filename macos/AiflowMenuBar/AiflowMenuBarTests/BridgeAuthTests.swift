@@ -457,3 +457,167 @@ private final class AuthTestClient {
 
     func close() { connection.cancel() }
 }
+
+// MARK: - Single-worker routing
+//
+// Several companion windows can be authenticated at once. Broadcasting an execution
+// instruction to all of them would have each start its own Codex turn for one Aiflow run.
+
+@MainActor
+final class BridgeWorkerRoutingTests: XCTestCase {
+    private var directory: URL!
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+    private var server: AiflowBridgeServer!
+    private var viewModel: WidgetViewModel!
+    private let token = BridgeToken.generate()
+    private let project = SavedProject(name: "demo", path: "/repos/demo")
+
+    override func setUp() async throws {
+        try await super.setUp()
+        let unique = UUID().uuidString
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aiflow-routing-\(unique)")
+        suiteName = "aiflow.tests.routing.\(unique)"
+        defaults = UserDefaults(suiteName: suiteName)
+
+        viewModel = WidgetViewModel(
+            store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
+            map: ChatProjectMap(fileURL: directory.appendingPathComponent("map.json")),
+            defaults: defaults,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: MuteNotifications()
+        )
+        server = AiflowBridgeServer(port: UInt16.random(in: 49_600...49_780), token: token)
+        viewModel.attachBridge(server)
+    }
+
+    override func tearDown() async throws {
+        server?.stop()
+        try? FileManager.default.removeItem(at: directory)
+        defaults.removePersistentDomain(forName: suiteName)
+        try await super.tearDown()
+    }
+
+    /// Connects and authenticates a companion, optionally announcing it as a worker.
+    private func connectCompanion(asWorker: Bool) async throws -> AuthTestClient {
+        let client = try AuthTestClient(port: server.boundPort)
+        _ = try await client.nextEvent(ofType: .hello)
+        client.send(#"{"type":"auth","token":"\#(token)"}"#)
+        _ = try await client.nextEvent(ofType: .snapshot)
+        if asWorker {
+            client.send(#"{"type":"worker_available","workerState":"ready"}"#)
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        return client
+    }
+
+    func testExecutionReachesOnlyTheDesignatedWorker() async throws {
+        let worker = try await connectCompanion(asWorker: true)
+        let viewer = try await connectCompanion(asWorker: false)
+        defer { worker.close(); viewer.close() }
+
+        XCTAssertTrue(server.hasDesignatedWorker)
+        XCTAssertTrue(
+            server.sendToWorker(
+                .executeRun(
+                    runId: "run-1", project: project, prompt: "p", model: "terra",
+                    effort: "low")))
+
+        let received = try await worker.nextEvent(ofType: .executeRun)
+        XCTAssertEqual(received.runId, "run-1")
+
+        // The passive viewer must never be told to execute.
+        do {
+            let leaked = try await viewer.nextEvent(ofType: .executeRun, timeout: 0.7)
+            XCTFail("a second companion received the execution request: \(leaked.runId ?? "?")")
+        } catch {
+            // Expected.
+        }
+    }
+
+    /// A second companion announcing readiness must not take the role from the first.
+    func testASecondReadyCompanionDoesNotBecomeAWorkerToo() async throws {
+        let first = try await connectCompanion(asWorker: true)
+        let second = try await connectCompanion(asWorker: true)
+        defer { first.close(); second.close() }
+
+        XCTAssertTrue(
+            server.sendToWorker(
+                .executeRun(
+                    runId: "run-1", project: project, prompt: "p", model: "terra",
+                    effort: "low")))
+
+        _ = try await first.nextEvent(ofType: .executeRun)
+        do {
+            _ = try await second.nextEvent(ofType: .executeRun, timeout: 0.7)
+            XCTFail("the execution request reached two companions")
+        } catch {
+            // Expected: exactly one worker serves a run.
+        }
+    }
+
+    func testNoWorkerMeansExecutionIsNotSent() async throws {
+        let viewer = try await connectCompanion(asWorker: false)
+        defer { viewer.close() }
+
+        XCTAssertFalse(server.hasDesignatedWorker)
+        XCTAssertFalse(
+            server.sendToWorker(
+                .executeRun(
+                    runId: "run-1", project: project, prompt: "p", model: "terra",
+                    effort: "low")),
+            "with no worker the app must fall back rather than broadcast")
+    }
+
+    /// Reconnecting replaces the worker rather than accumulating a second one.
+    func testReconnectingWorkerDoesNotCreateASecondWorker() async throws {
+        let first = try await connectCompanion(asWorker: true)
+        first.close()
+        try await Task.sleep(for: .milliseconds(300))
+
+        let second = try await connectCompanion(asWorker: true)
+        defer { second.close() }
+
+        XCTAssertTrue(server.hasDesignatedWorker)
+        XCTAssertTrue(
+            server.sendToWorker(
+                .executeRun(
+                    runId: "run-2", project: project, prompt: "p", model: "terra",
+                    effort: "low")))
+        let delivered = try await second.nextEvent(ofType: .executeRun)
+        XCTAssertEqual(delivered.runId, "run-2")
+    }
+
+    /// A report from a companion that is not the worker is not evidence about the run.
+    func testWorkerReportsFromANonWorkerAreIgnored() async throws {
+        let worker = try await connectCompanion(asWorker: true)
+        let viewer = try await connectCompanion(asWorker: false)
+        defer { worker.close(); viewer.close() }
+
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        viewer.send(#"{"type":"worker_completed","runId":"run-1","message":"not from the worker"}"#)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(viewModel.runState, .running(project), "a viewer cannot finish a run")
+
+        worker.send(#"{"type":"worker_completed","runId":"run-1","message":"done"}"#)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(viewModel.runState, .completed(project))
+    }
+
+    /// Passive viewers still receive ordinary run events.
+    func testViewersStillReceiveStatusEvents() async throws {
+        let worker = try await connectCompanion(asWorker: true)
+        let viewer = try await connectCompanion(asWorker: false)
+        defer { worker.close(); viewer.close() }
+
+        server.broadcast(.agentMessage("hello"))
+
+        let toViewer = try await viewer.nextEvent(ofType: .agentMessage)
+        let toWorker = try await worker.nextEvent(ofType: .agentMessage)
+        XCTAssertEqual(toViewer.message, "hello")
+        XCTAssertEqual(toWorker.message, "hello")
+    }
+}

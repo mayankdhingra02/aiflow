@@ -6,6 +6,7 @@ import {
     MAX_FRAME_BYTES,
     TOKEN_RELATIVE_PATH,
     LineBuffer,
+    admitRun,
     parseExecutionRequest,
     encodeCommand,
     initialState,
@@ -406,4 +407,21 @@ test('worker reports are outbound commands with their run id', () => {
         assert.ok(line.includes('"runId":"run-1"'), type);
         assert.ok(line.endsWith('\n'));
     }
+});
+
+// MARK: execute_run admission
+//
+// A reconnect can redeliver the same execute_run. Treating that as "busy" would fail the run
+// that is currently succeeding.
+
+test('an execution request starts when nothing is running', () => {
+    assert.equal(admitRun(undefined, 'run-1'), 'start');
+});
+
+test('a duplicate of the active run is ignored, not rejected', () => {
+    assert.equal(admitRun('run-1', 'run-1'), 'ignore-duplicate');
+});
+
+test('a different run while one is active is rejected as busy', () => {
+    assert.equal(admitRun('run-1', 'run-2'), 'reject-busy');
 });

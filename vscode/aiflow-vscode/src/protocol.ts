@@ -427,3 +427,23 @@ export function parseExecutionRequest(event: BridgeEvent): ExecutionRequest | un
     }
     return { runId, workspacePath, prompt, model: event.model, effort: event.effort };
 }
+
+/** What to do with an incoming `execute_run`, given the run already in flight. */
+export type RunAdmission = 'start' | 'ignore-duplicate' | 'reject-busy';
+
+/**
+ * Decides whether an execution request should start a run.
+ *
+ * A reconnect (or any repeated frame) can redeliver the *same* `execute_run`. Treating that as
+ * "busy" would fail the run that is currently succeeding, so an identical run id is ignored
+ * rather than rejected. A genuinely different run while one is active is still refused.
+ */
+export function admitRun(
+    activeRunId: string | undefined,
+    requestedRunId: string
+): RunAdmission {
+    if (!activeRunId) {
+        return 'start';
+    }
+    return activeRunId === requestedRunId ? 'ignore-duplicate' : 'reject-busy';
+}

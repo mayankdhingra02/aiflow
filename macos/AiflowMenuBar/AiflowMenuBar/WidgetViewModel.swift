@@ -280,12 +280,15 @@ final class WidgetViewModel: ObservableObject {
         // Prefer the official Codex extension when a companion is connected and has reported
         // it usable; otherwise fall back to Aiflow's own App Server session. Exactly one of
         // the two runs — never both.
-        if officialWorkerAvailable, bridge?.hasAuthenticatedClient == true {
-            activeWorker = .officialVSCode
-            emit(
+        // Execution goes to the single designated companion, never to every viewer: two
+        // companions receiving one execute_run would each start a Codex turn.
+        if officialWorkerAvailable, let bridge, bridge.hasDesignatedWorker,
+            bridge.sendToWorker(
                 .executeRun(
                     runId: runId, project: project, prompt: prompt,
                     model: selectedModelRole, effort: effort))
+        {
+            activeWorker = .officialVSCode
             emitRunStarted(project: project, effort: effort, prompt: prompt)
             return
         }
@@ -450,7 +453,7 @@ final class WidgetViewModel: ObservableObject {
 
         // Route the interrupt to whichever worker is actually serving this run.
         if activeWorker == .officialVSCode, let runId = activeRunId {
-            emit(.cancelRun(runId: runId))
+            bridge?.sendToWorker(.cancelRun(runId: runId))
             return
         }
         Task { await client?.cancel() }

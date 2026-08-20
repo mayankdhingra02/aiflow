@@ -58,6 +58,16 @@ export class BridgeClient extends EventEmitter {
     private reconnectTimer: NodeJS.Timeout | undefined;
     private disposed = false;
     private connected = false;
+    /**
+     * Bumped whenever the current connection is replaced or abandoned.
+     *
+     * A socket's callbacks fire asynchronously, so a socket we already discarded can still
+     * deliver `close` (or data) afterwards. Without this, that stale `close` would null out the
+     * *replacement* socket and schedule yet another reconnect, leaving one client with several
+     * live authenticated sockets all emitting the same events — which is how one execute_run
+     * turned into a duplicate.
+     */
+    private generation = 0;
 
     constructor(options: BridgeClientOptions = {}) {
         super();
@@ -79,10 +89,19 @@ export class BridgeClient extends EventEmitter {
         this.clearTimer();
 
         const socket = this.createSocket();
+        const generation = ++this.generation;
         this.socket = socket;
         socket.setEncoding('utf8');
 
+        /** True only while this socket is still the one the client is using. */
+        const isCurrent = (): boolean =>
+            !this.disposed && generation === this.generation && this.socket === socket;
+
         socket.on('connect', () => {
+            if (!isCurrent()) {
+                socket.destroy();
+                return;
+            }
             this.connected = true;
             this.retryIndex = 0;
             this.buffer.reset();
@@ -100,6 +119,10 @@ export class BridgeClient extends EventEmitter {
         });
 
         socket.on('data', (chunk: string | Buffer) => {
+            // A discarded socket must never emit a bridge event.
+            if (!isCurrent()) {
+                return;
+            }
             const lines = this.buffer.append(chunk.toString());
             if (lines === null) {
                 // Oversized frame: drop the connection rather than buffering without bound.
@@ -120,6 +143,11 @@ export class BridgeClient extends EventEmitter {
         });
 
         socket.on('close', () => {
+            // A stale close belongs to a connection we already replaced: it must not clear the
+            // newer socket, and must not schedule a second reconnect.
+            if (!isCurrent()) {
+                return;
+            }
             const wasConnected = this.connected;
             this.connected = false;
             this.socket = undefined;
@@ -132,15 +160,18 @@ export class BridgeClient extends EventEmitter {
         socket.connect({ host: this.host, port: this.port });
     }
 
-    /** Drops the current socket and retries immediately. */
+    /** Drops the current socket and retries immediately, leaving exactly one connection. */
     reconnectNow(): void {
         this.retryIndex = 0;
         this.clearTimer();
-        if (this.socket) {
-            this.socket.destroy();
-            this.socket = undefined;
-            this.connected = false;
-        }
+
+        const previous = this.socket;
+        // Retire the old connection first so its late callbacks cannot touch the new one.
+        this.generation += 1;
+        this.socket = undefined;
+        this.connected = false;
+        previous?.destroy();
+
         this.connect();
     }
 
@@ -229,6 +260,7 @@ export class BridgeClient extends EventEmitter {
 
     dispose(): void {
         this.disposed = true;
+        this.generation += 1;
         this.clearTimer();
         this.socket?.destroy();
         this.socket = undefined;

@@ -30,6 +30,9 @@ final class AiflowBridgeServer: @unchecked Sendable {
     /// The expected token. Never logged, never sent, never included in an event.
     private let token: String?
 
+    /// The single companion allowed to execute runs. Others stay passive viewers.
+    private var workerKey: ObjectIdentifier?
+
     private(set) var lastError: String?
 
     init(
@@ -49,11 +52,42 @@ final class AiflowBridgeServer: @unchecked Sendable {
         return listener != nil
     }
 
-    /// True when at least one companion has authenticated — i.e. a worker could serve a run.
+    /// True when at least one companion has authenticated — i.e. a viewer is attached.
     var hasAuthenticatedClient: Bool {
         lock.lock()
         defer { lock.unlock() }
         return connections.values.contains { $0.isAuthenticated }
+    }
+
+    /// True when one companion has been designated to execute runs.
+    var hasDesignatedWorker: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentWorker() != nil
+    }
+
+    /// Sends an execution instruction to the one designated worker.
+    ///
+    /// Execution is deliberately *not* broadcast: several companion windows can be
+    /// authenticated at once, and broadcasting `execute_run` would have each of them start its
+    /// own Codex turn for a single Aiflow run.
+    @discardableResult
+    func sendToWorker(_ event: BridgeEvent) -> Bool {
+        guard let data = BridgeCodec.encode(event) else { return false }
+        lock.lock()
+        let target = currentWorker()
+        lock.unlock()
+        guard let target else { return false }
+        target.send(data)
+        return true
+    }
+
+    /// The designated worker, if it is still connected and authenticated. Caller holds `lock`.
+    private func currentWorker() -> Connection? {
+        guard let key = workerKey, let connection = connections[key],
+            connection.isAuthenticated, connection.isWorker
+        else { return nil }
+        return connection
     }
 
     var connectionCount: Int {
@@ -128,6 +162,8 @@ final class AiflowBridgeServer: @unchecked Sendable {
             guard let self else { return }
             self.lock.lock()
             self.connections.removeValue(forKey: key)
+            // A departing worker releases the role so another companion can take it.
+            if self.workerKey == key { self.workerKey = nil }
             self.lock.unlock()
             // Deliberately nothing else: losing the viewer never touches the run.
         }
@@ -163,6 +199,35 @@ final class AiflowBridgeServer: @unchecked Sendable {
             return
         }
 
+        // Worker designation is about connection identity, so it is settled here rather than
+        // in the controller: the first authenticated companion that announces itself ready
+        // becomes the one worker, and only it may execute runs or report on them.
+        if command.type == .workerAvailable {
+            let key = ObjectIdentifier(connection)
+            let ready = command.workerState == "ready"
+            lock.lock()
+            connection.isWorker = ready
+            if ready {
+                if workerKey == nil || workerKey == key { workerKey = key }
+            } else if workerKey == key {
+                workerKey = nil
+            }
+            let isDesignated = workerKey == key
+            lock.unlock()
+
+            // Only the designated worker's availability drives the app's worker choice; a
+            // second companion announcing readiness must not change it.
+            guard isDesignated else { return }
+        }
+
+        if command.type.isWorkerReport {
+            lock.lock()
+            let fromDesignatedWorker = workerKey == ObjectIdentifier(connection)
+            lock.unlock()
+            // A report from anything other than the worker serving the run is not evidence.
+            guard fromDesignatedWorker else { return }
+        }
+
         Task { @MainActor [weak self] in
             self?.controller?.handleBridgeCommand(command)
         }
@@ -184,6 +249,9 @@ final class AiflowBridgeServer: @unchecked Sendable {
         private let buffer = BoundedLineBuffer()
         private let stateLock = NSLock()
         private var authenticated = false
+
+        /// Set when this companion announced it can execute runs.
+        var isWorker = false
 
         /// Per connection: authenticating one client never authenticates another.
         var isAuthenticated: Bool {

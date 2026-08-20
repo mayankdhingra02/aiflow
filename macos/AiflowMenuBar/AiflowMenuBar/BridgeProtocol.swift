@@ -47,6 +47,17 @@ enum BridgeCommandType: String, Codable {
     /// Announces whether the companion can serve runs through the official Codex extension.
     /// Carries no run id: it describes the companion, not a run.
     case workerAvailable = "worker_available"
+
+    /// Reports about a run in flight, which only the designated worker may send.
+    var isWorkerReport: Bool {
+        switch self {
+        case .workerAccepted, .workerThread, .workerStatus, .workerCompleted, .workerFailed,
+            .workerCancelled:
+            return true
+        case .auth, .ping, .cancel, .approve, .deny, .answerQuestion, .workerAvailable:
+            return false
+        }
+    }
 }
 
 /// Mirrors `ToolRequestUserInputOption`.
