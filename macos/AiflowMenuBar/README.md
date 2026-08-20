@@ -25,7 +25,11 @@ Saved projects live in `~/Library/Application Support/Aiflow/saved-projects.json
 Chat→project mappings live in `~/Library/Application Support/Aiflow/chat-project-map.json`.
 Removing a project only forgets it — the repository on disk is never touched.
 
-## Approvals are always manual
+## Legacy App Server approvals (fallback)
+
+The details below apply when Aiflow uses its legacy App Server worker. The opt-in official
+VS Code worker inherits the official Codex extension's current policy; its menu-bar label says
+`Approval: Codex policy` rather than implying that these native sheets control that worker.
 
 Three separate things, none of them automatic:
 

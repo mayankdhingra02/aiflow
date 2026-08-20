@@ -213,7 +213,7 @@ struct MenuBarView: View {
             HStack {
                 Text("Projects").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text("Approval: Manual").font(.caption2).foregroundStyle(.secondary)
+                Text(viewModel.approvalDisplayLabel).font(.caption2).foregroundStyle(.secondary)
             }
 
             if viewModel.savedProjects.isEmpty {

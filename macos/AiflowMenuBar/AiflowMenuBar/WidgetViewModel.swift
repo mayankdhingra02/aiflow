@@ -93,6 +93,15 @@ final class WidgetViewModel: ObservableObject {
 
     var models: [CodexModel] { config?.models ?? [] }
     var efforts: [String] { config?.reasoningEfforts ?? [] }
+    /// The official worker uses the official Codex extension's policy; Aiflow's Manual label
+    /// applies only to the legacy App Server path, where this app mediates approval requests.
+    var approvalDisplayLabel: String {
+        if activeWorker == .officialVSCode || (activeWorker == nil && officialWorkerAvailable) {
+            return "Approval: Codex policy"
+        }
+        return "Approval: Manual"
+    }
+
     var hasPrompt: Bool { !clipboardPrompt.isEmpty }
     var promptCharacterCount: Int { clipboardPrompt.count }
     var resolvedModelId: String? { config?.model(forRole: selectedModelRole)?.modelId }

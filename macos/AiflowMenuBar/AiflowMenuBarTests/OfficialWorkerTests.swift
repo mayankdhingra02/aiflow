@@ -118,6 +118,17 @@ final class OfficialWorkerTests: XCTestCase {
         XCTAssertTrue(viewModel.officialWorkerAvailable)
     }
 
+    func testApprovalLabelDistinguishesOfficialWorkerPolicyFromLegacyManualApproval() {
+        let viewModel = makeViewModel()
+        XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Manual")
+
+        viewModel.setOfficialWorkerAvailable(true)
+        XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Codex policy")
+
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "legacy-run")
+        XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Manual")
+    }
+
     // MARK: - Run-id correlation
 
     func testWorkerCompletionFinishesTheMatchingRun() {
@@ -350,7 +361,8 @@ final class OfficialWorkerTests: XCTestCase {
     // MARK: - Security posture
 
     /// The execution request is the only event carrying parameters, and it never carries a
-    /// sandbox or approval override — those stay the official extension's own safe defaults.
+    /// sandbox or approval override — the official worker inherits the official extension's
+    /// current policy.
     func testExecuteRunCarriesNoPermissionOverrides() throws {
         let event = BridgeEvent.executeRun(
             runId: "run-1", project: project, prompt: "p", model: "terra", effort: "medium")

@@ -86,6 +86,12 @@ Check:
 - [ ] `approval_policy` is `on-request`, `approvals_reviewer` is `user`,
       `sandbox` is `workspace-write` — **not** `danger-full-access`.
 
+These session-metadata checks are observational evidence for this manually accepted run only.
+They are not a production pre-start enforcement guarantee: the official worker sends no sandbox
+or approval overrides, does not call `findTurnContext()` before `startTurn`, and currently has
+no proven follower request that exposes the conversation's policy before the real prompt. The
+official worker inherits the policy already selected by the official Codex extension.
+
 ## 7–8. Aiflow receives the final answer
 
 - [ ] Codex answers in the official UI.

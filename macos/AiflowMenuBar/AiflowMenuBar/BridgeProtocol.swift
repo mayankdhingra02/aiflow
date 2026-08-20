@@ -2,11 +2,12 @@ import Foundation
 
 /// Wire types for the local Aiflow ↔ VS Code bridge.
 ///
-/// The companion is a view/control surface, never a Codex client. That asymmetry is encoded
-/// in these types on purpose: events carry rich state outward, while inbound commands carry
-/// only a verb, an optional request id, and answers. There is deliberately no field for a
-/// repository path, sandbox value, model id, prompt, or shell command, so a compromised or
-/// buggy client cannot introduce one.
+/// The companion is an authenticated view/control surface for Aiflow runs and, for the
+/// official-worker path, a bounded follower/client of the official Codex IPC router. The
+/// bridge itself remains transport-only: events carry rich state outward, while inbound
+/// commands carry only a verb, an optional request id, and answers. There is deliberately no
+/// field for a repository path, sandbox value, model id, prompt, or shell command, so a
+/// compromised or buggy client cannot introduce one.
 enum BridgeEventType: String, Codable {
     case hello
     case snapshot

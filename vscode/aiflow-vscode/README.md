@@ -104,10 +104,19 @@ hard-codes a Codex model id.
 
 ### Permissions
 
-Aiflow sends no sandbox or approval overrides. The run inherits the official extension's own
-safe defaults (workspace-write, approvals on request, reviewed by you), and approval and
-question prompts stay in the official Codex UI where you answer them. A run can never become
-`danger-full-access` because another Codex thread was configured differently.
+Aiflow sends no sandbox or approval overrides. The official worker therefore inherits whatever
+sandbox and approval policy the official Codex extension/conversation currently uses; Aiflow does
+not guarantee or enforce `workspace-write`, `on-request`, or reviewer `user` before dispatching
+the real prompt. Approval and question prompts remain in the official Codex UI, where you answer
+them. The worker never broadens permissions by sending `danger-full-access` or another override.
+
+The accepted `openai.chatgpt@26.814.41407` manual session recorded
+`workspace-write`/`on-request`/`user` in its session metadata. That is evidence about that
+accepted session, not a production pre-start safety gate. The session watcher can read this
+metadata after a turn has started, but the worker does not use it to verify policy before
+`startTurn`, and no proven pre-start follower request currently exposes those settings. Confirm
+the policy in the official Codex UI before using the opt-in official worker. The legacy App
+Server worker's approval behavior is unchanged.
 
 ### Wire protocol
 
