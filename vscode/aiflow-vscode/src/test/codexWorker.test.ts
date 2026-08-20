@@ -1,6 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { OfficialCodexWorker, WorkerError, isProvisionalConversationId } from '../codexIpc/worker';
+import {
+    OfficialCodexWorker,
+    WorkerError,
+    isProvisionalConversationId,
+    turnIdFromStartResponse
+} from '../codexIpc/worker';
 import { SessionRecord } from '../codexIpc/sessionWatcher';
 import {
     ThreadResolutionError,
@@ -31,11 +36,15 @@ class FakeIpc {
             throw new Error('settings rejected');
         }
     }
-    async startTurn(target: string, conv: string, prompt: string, execution: unknown): Promise<void> {
+    startTurnResult: unknown = {};
+    async startTurn(
+        target: string, conv: string, prompt: string, execution: unknown
+    ): Promise<unknown> {
         this.calls.push({ op: 'startTurn', args: [target, conv, prompt, execution] });
         if (this.failStart) {
             throw new Error('start rejected');
         }
+        return this.startTurnResult;
     }
     async interruptTurn(target: string, conv: string, turnId?: string): Promise<void> {
         this.calls.push({ op: 'interruptTurn', args: [target, conv, turnId] });
@@ -391,4 +400,79 @@ test('a timeout fails cleanly instead of picking some other thread', async () =>
         () => harness.run(),
         (error: ThreadResolutionError) => error.code === 'timeout'
     );
+});
+
+// MARK: ordering and turn-id source
+//
+// Measured against the real extension: a conversation that has never taken a turn has no
+// session file, so the turn must be started before the session log is opened.
+
+test('the turn is started before the session log is opened', async () => {
+    const ipc = new FakeIpc();
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => CONV,
+        // Recorded into the same list as the IPC calls so the true interleaving is visible.
+        findSession: () => {
+            ipc.calls.push({ op: 'findSession', args: [] });
+            return '/fake/session.jsonl';
+        },
+        createTail: () => scriptedTail([[started('turn-1')], [complete('turn-1', 'ok')]]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
+
+    await worker.run(REQUEST);
+
+    const ops = ipc.calls.map((c) => c.op);
+    const startIndex = ops.indexOf('startTurn');
+    const sessionIndex = ops.indexOf('findSession');
+
+    assert.ok(startIndex >= 0 && sessionIndex >= 0, 'both steps happened');
+    assert.ok(
+        startIndex < sessionIndex,
+        `start-turn must precede session lookup, got ${JSON.stringify(ops)}`
+    );
+});
+
+test('the turn id from the start-turn response is preferred over inference', async () => {
+    const ipc = new FakeIpc();
+    ipc.startTurnResult = { result: { turn: { id: 'turn-from-response' } } };
+    // The session also reports a different turn starting; the response must win.
+    const worker = makeWorker(ipc, [
+        [started('turn-from-some-other-run')],
+        [complete('turn-from-response', 'authoritative')]
+    ]);
+
+    const result = await worker.run(REQUEST);
+
+    assert.equal(result.turnId, 'turn-from-response');
+    assert.equal(result.finalMessage, 'authoritative');
+});
+
+test('turn ids are read from several plausible response shapes', () => {
+    assert.equal(turnIdFromStartResponse({ result: { turn: { id: 'a' } } }), 'a');
+    assert.equal(turnIdFromStartResponse({ result: { turnId: 'b' } }), 'b');
+    assert.equal(turnIdFromStartResponse({ turn: { id: 'c' } }), 'c');
+    assert.equal(turnIdFromStartResponse({ result: {} }), undefined);
+    assert.equal(turnIdFromStartResponse(undefined), undefined);
+});
+
+test('without a turn id in the response the first observed task_started is used', async () => {
+    const ipc = new FakeIpc();
+    ipc.startTurnResult = {};
+    const worker = makeWorker(ipc, [[started('turn-1')], [complete('turn-1', 'ok')]]);
+
+    assert.equal((await worker.run(REQUEST)).turnId, 'turn-1');
+});
+
+test('a failed run leaves no active handle for a later cancel', async () => {
+    const ipc = new FakeIpc();
+    ipc.failSettings = true;
+    const worker = makeWorker(ipc, [[started('turn-1')]]);
+
+    await assert.rejects(() => worker.run(REQUEST));
+
+    assert.equal(worker.activeHandle, undefined);
+    assert.equal(await worker.cancel(REQUEST.runId), false, 'nothing of ours remains to cancel');
 });

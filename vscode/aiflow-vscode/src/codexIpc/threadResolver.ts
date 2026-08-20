@@ -62,8 +62,20 @@ const DEFAULT_POLL_MS = 200;
  *
  * Correlation rule: we start listening first, record every conversation id already mentioned
  * on the router, then ask for a new panel. Only an id we had not seen before is eligible, so a
- * user's existing threads can never be selected. Provisional `client-new-thread:` ids are
- * tracked but never returned as final — the real id replaces them once the thread exists.
+ * user's existing threads can never be selected.
+ *
+ * KNOWN LIMITATION, measured against the installed extension (26.814.41407): opening a panel
+ * announces no conversation at all. `chatgpt.newCodexPanel` and `chatgpt.newChat` both emit
+ * only `client-status-changed` with no id, no provisional `client-new-thread:` id reaches the
+ * router, and the router's method table contains no thread-creation request — every
+ * `thread-follower-*` operation addresses a conversation that already exists. A real
+ * conversation appears to come into being only when a human submits the first message in the
+ * panel.
+ *
+ * So this resolver currently always times out, by design: failing is correct, because the
+ * alternative would be dispatching an Aiflow run into one of the user's unrelated
+ * conversations. It is kept (rather than deleted) so the moment the extension does announce a
+ * new thread, the correlation is already right.
  */
 export async function createFreshThread(
     deps: FreshThreadDeps,
@@ -116,7 +128,8 @@ export async function createFreshThread(
             'timeout',
             sawProvisional
                 ? 'a new Codex panel was created but never reported a real conversation id'
-                : 'the official Codex extension did not report a new conversation'
+                : 'the official Codex extension announced no conversation for the new panel; ' +
+                  'a fresh official thread cannot currently be created from a follower client'
         );
     } finally {
         unsubscribe();

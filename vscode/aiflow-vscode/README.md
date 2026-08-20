@@ -94,12 +94,26 @@ exactly as the extension's own version function does. Cancellation sends
 
 ### Known gaps
 
-- **Fresh-thread creation is unproven.** The official extension uses provisional
-  `client-new-thread:` ids, and it is not established whether a real conversation exists before
-  the first submission. Until an experiment settles it, the worker is opt-in and a fresh thread
-  that cannot be correlated fails with a typed error rather than borrowing one of your existing
-  conversations.
-- **No end-to-end acceptance run has passed yet.** See `ACCEPTANCE.md`.
+**Fresh-thread creation is currently not possible from a follower client.** Measured against
+`openai.chatgpt@26.814.41407`, with the probe running in the same extension host:
+
+| Route | Result |
+| --- | --- |
+| `chatgpt.newCodexPanel` | executes; announces only `client-status-changed` with **no** conversation id |
+| `chatgpt.newChat` | same — no conversation id |
+| `thread-stream-following-status-requested` | `resultType: error`, `no-client-found` |
+| router method table | contains **no** thread-creation request; every `thread-follower-*` op addresses an existing `conversationId` |
+
+No provisional `client-new-thread:` id reaches the router either. A real conversation appears
+to exist only once a human submits the first message in the panel — which we will not automate.
+
+Consequently the official worker stays **off by default**, the resolver fails with a typed
+error rather than borrowing one of your existing conversations, and the legacy Aiflow worker
+serves runs. Driving an *existing* conversation is fully implemented and would work; it is
+deliberately not wired to production because Aiflow must not guess which of your conversations
+to use.
+
+**No end-to-end acceptance run has passed.** See `ACCEPTANCE.md`.
 
 ### Fallback
 

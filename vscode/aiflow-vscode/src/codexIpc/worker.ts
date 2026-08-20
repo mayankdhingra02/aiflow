@@ -152,8 +152,26 @@ export class OfficialCodexWorker {
             );
         }
 
-        // 4. Start watching the session *before* the turn starts, so the turn id cannot be
-        //    missed between starting and the first poll.
+        // 4. Submit the exact prompt. The turn must be started before the session log is
+        //    opened: a conversation that has never taken a turn has no session file yet, so
+        //    waiting for one first would deadlock.
+        emit({ type: 'status', runId: request.runId, state: 'starting' });
+        let startResponse: unknown;
+        try {
+            startResponse = await this.deps.ipc.startTurn(
+                owner, conversationId, request.prompt, execution);
+        } catch (error) {
+            throw new WorkerError('start_rejected', `could not start turn: ${describe(error)}`);
+        }
+
+        // 5. Prefer the turn id Codex returned. Inferring it from "the first task_started we
+        //    happen to see" is a guess; the response is authoritative when it carries one.
+        let turnId = turnIdFromStartResponse(startResponse);
+        if (turnId) {
+            this.active = { runId: request.runId, conversationId, turnId };
+            emit({ type: 'turn', runId: request.runId, conversationId, turnId });
+        }
+
         const sessionPath = await this.waitForSession(
             conversationId,
             findSession,
@@ -163,25 +181,16 @@ export class OfficialCodexWorker {
             options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
         );
         const tail = (this.deps.createTail ?? ((p: string) => new SessionTail(p)))(sessionPath);
-        tail.readNew(); // drain history: only turns started from here belong to this run
-
-        // 5. Submit the exact prompt.
-        emit({ type: 'status', runId: request.runId, state: 'starting' });
-        try {
-            await this.deps.ipc.startTurn(owner, conversationId, request.prompt, execution);
-        } catch (error) {
-            throw new WorkerError('start_rejected', `could not start turn: ${describe(error)}`);
-        }
 
         // 6. Learn the exact turn id, then wait for that exact turn to finish.
         const deadline = now() + (options.completionTimeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS);
-        let turnId: string | undefined;
         let result: TurnResult | undefined;
 
         while (now() < deadline) {
             const records = tail.readNew();
 
             if (!turnId) {
+                // Only used when the start-turn response did not name the turn.
                 const started = findStartedTurnIds(records);
                 if (started.length > 0) {
                     turnId = started[0];
@@ -282,4 +291,24 @@ function describe(error: unknown): string {
         return error.message;
     }
     return String(error);
+}
+
+/**
+ * Reads the turn id out of a `thread-follower-start-turn` response, when the router provides
+ * one. Several shapes are tolerated because only the presence of a turn id matters.
+ */
+export function turnIdFromStartResponse(response: unknown): string | undefined {
+    const result = (response as { result?: unknown } | undefined)?.result ?? response;
+    if (typeof result !== 'object' || result === null) {
+        return undefined;
+    }
+    const record = result as Record<string, unknown>;
+    const turn = record.turn as { id?: unknown } | undefined;
+
+    for (const candidate of [turn?.id, record.turnId, record.turn_id]) {
+        if (typeof candidate === 'string' && candidate.length > 0) {
+            return candidate;
+        }
+    }
+    return undefined;
 }
