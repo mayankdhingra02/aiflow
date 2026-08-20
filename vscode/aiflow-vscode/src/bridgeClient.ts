@@ -193,6 +193,40 @@ export class BridgeClient extends EventEmitter {
         return this.send({ type: 'answer_question', requestId, answers });
     }
 
+    // MARK: - v2 worker reports
+    //
+    // Every report names the run it belongs to, so a stale report from a previous run can
+    // never complete the wrong Aiflow job.
+
+    /** Announces whether this companion can serve runs through the official Codex extension. */
+    workerAvailable(ready: boolean): boolean {
+        return this.send({ type: 'worker_available', workerState: ready ? 'ready' : 'unavailable' });
+    }
+
+    workerAccepted(runId: string): boolean {
+        return this.send({ type: 'worker_accepted', runId });
+    }
+
+    workerThread(runId: string, conversationId: string, turnId?: string): boolean {
+        return this.send({ type: 'worker_thread', runId, conversationId, turnId });
+    }
+
+    workerStatus(runId: string, workerState: string): boolean {
+        return this.send({ type: 'worker_status', runId, workerState });
+    }
+
+    workerCompleted(runId: string, message: string): boolean {
+        return this.send({ type: 'worker_completed', runId, message });
+    }
+
+    workerFailed(runId: string, message: string): boolean {
+        return this.send({ type: 'worker_failed', runId, message });
+    }
+
+    workerCancelled(runId: string): boolean {
+        return this.send({ type: 'worker_cancelled', runId });
+    }
+
     dispose(): void {
         this.disposed = true;
         this.clearTimer();

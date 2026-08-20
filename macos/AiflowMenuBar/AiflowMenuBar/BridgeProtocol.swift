@@ -21,6 +21,11 @@ enum BridgeEventType: String, Codable {
     /// Reserved for the file-following spike.
     case fileOpen = "file_open"
     case fileChanged = "file_changed"
+    /// v2: asks the companion to execute a run through the official Codex extension. This is
+    /// the only event carrying execution parameters, and it travels app -> companion only.
+    case executeRun = "execute_run"
+    /// v2: asks the companion to interrupt the official turn serving this exact run.
+    case cancelRun = "cancel_run"
 }
 
 enum BridgeCommandType: String, Codable {
@@ -31,6 +36,17 @@ enum BridgeCommandType: String, Codable {
     case approve
     case deny
     case answerQuestion = "answer_question"
+    /// v2 worker reports from the companion. Each names the run it belongs to so a stale
+    /// report can never complete a newer run.
+    case workerAccepted = "worker_accepted"
+    case workerThread = "worker_thread"
+    case workerStatus = "worker_status"
+    case workerCompleted = "worker_completed"
+    case workerFailed = "worker_failed"
+    case workerCancelled = "worker_cancelled"
+    /// Announces whether the companion can serve runs through the official Codex extension.
+    /// Carries no run id: it describes the companion, not a run.
+    case workerAvailable = "worker_available"
 }
 
 /// Mirrors `ToolRequestUserInputOption`.
@@ -91,6 +107,11 @@ struct BridgeEvent: Codable, Equatable {
     var questions: [BridgeQuestion]?
     var path: String?
 
+    // v2 execute_run fields.
+    var runId: String?
+    var workspacePath: String?
+    var prompt: String?
+
     init(type: BridgeEventType) {
         self.type = type
     }
@@ -104,14 +125,28 @@ struct BridgeCommand: Codable, Equatable {
     /// Only ever read from an `auth` command. Never echoed back and never logged.
     var token: String?
 
+    // v2 worker report fields.
+    var runId: String?
+    var conversationId: String?
+    var turnId: String?
+    var workerState: String?
+    var message: String?
+
     init(
         type: BridgeCommandType, requestId: CodexRequestID? = nil,
-        answers: [String: String]? = nil, token: String? = nil
+        answers: [String: String]? = nil, token: String? = nil,
+        runId: String? = nil, conversationId: String? = nil, turnId: String? = nil,
+        workerState: String? = nil, message: String? = nil
     ) {
         self.type = type
         self.requestId = requestId
         self.answers = answers
         self.token = token
+        self.runId = runId
+        self.conversationId = conversationId
+        self.turnId = turnId
+        self.workerState = workerState
+        self.message = message
     }
 }
 
@@ -261,6 +296,26 @@ extension BridgeEvent {
         event.requestId = request.id
         event.questions = request.questions.map(BridgeQuestion.init)
         event.project = request.projectName
+        return event
+    }
+
+    /// Asks the companion to execute a run through the official Codex extension.
+    static func executeRun(
+        runId: String, project: SavedProject, prompt: String, model: String, effort: String
+    ) -> BridgeEvent {
+        var event = BridgeEvent(type: .executeRun)
+        event.runId = runId
+        event.workspacePath = project.path
+        event.project = project.name
+        event.prompt = prompt
+        event.model = model
+        event.effort = effort
+        return event
+    }
+
+    static func cancelRun(runId: String) -> BridgeEvent {
+        var event = BridgeEvent(type: .cancelRun)
+        event.runId = runId
         return event
     }
 

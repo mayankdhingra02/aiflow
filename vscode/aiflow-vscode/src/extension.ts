@@ -1,11 +1,27 @@
 import * as vscode from 'vscode';
 import { BridgeClient } from './bridgeClient';
 import { AiflowViewProvider } from './aiflowView';
-import { AiflowState, BridgeEvent, initialState, reduce, statusLabel } from './protocol';
+import {
+    AiflowState,
+    BridgeEvent,
+    initialState,
+    parseExecutionRequest,
+    reduce,
+    statusLabel
+} from './protocol';
+import { OfficialCodexHost } from './codexIpc/host';
+import { WorkerError } from './codexIpc/worker';
 
 /**
- * Aiflow companion. A live viewer/controller for the Codex run the Aiflow menu-bar app
- * already owns — it never launches Codex and never talks to the official Codex extension.
+ * Aiflow companion.
+ *
+ * Two roles:
+ *  - a live viewer/controller for a run the Aiflow menu-bar app owns itself (legacy path), and
+ *  - a worker that executes a run through the official Codex extension when the app asks it to.
+ *
+ * The companion never starts a Codex process of its own. On the worker path the official
+ * `openai.chatgpt` extension owns and runs the session, and the conversation is visible in the
+ * official Codex UI; Aiflow only drives it as a follower over Codex's local IPC router.
  */
 export function activate(context: vscode.ExtensionContext): void {
     let state: AiflowState = initialState();
@@ -19,6 +35,70 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const client = new BridgeClient();
     context.subscriptions.push({ dispose: () => client.dispose() });
+
+    const codex = new OfficialCodexHost();
+    context.subscriptions.push({ dispose: () => codex.dispose() });
+
+    /** The run the official worker is currently executing, if any. */
+    let activeWorkerRunId: string | undefined;
+
+    /**
+     * Executes one Aiflow run through the official Codex extension.
+     *
+     * Only one worker run is in flight at a time: a second request while one is active is
+     * refused rather than silently running two Codex turns for one Aiflow job.
+     */
+    const executeRun = async (event: BridgeEvent): Promise<void> => {
+        const request = parseExecutionRequest(event);
+        if (!request) {
+            return; // malformed execution requests are ignored, never guessed at
+        }
+        if (activeWorkerRunId) {
+            client.workerFailed(request.runId, 'another Aiflow run is already executing');
+            return;
+        }
+
+        activeWorkerRunId = request.runId;
+        client.workerAccepted(request.runId);
+        state = { ...state, runState: 'launching', project: request.workspacePath };
+        render();
+
+        try {
+            const result = await codex.run(request, (workerEvent) => {
+                if (workerEvent.type === 'thread' && workerEvent.conversationId) {
+                    client.workerThread(request.runId, workerEvent.conversationId);
+                } else if (workerEvent.type === 'turn' && workerEvent.conversationId) {
+                    client.workerThread(
+                        request.runId,
+                        workerEvent.conversationId,
+                        workerEvent.turnId
+                    );
+                } else if (workerEvent.type === 'status' && workerEvent.state) {
+                    client.workerStatus(request.runId, workerEvent.state);
+                    state = { ...state, runState: workerEvent.state };
+                    render();
+                }
+            });
+
+            if (result.outcome === 'completed') {
+                client.workerCompleted(request.runId, result.finalMessage ?? '');
+            } else if (result.outcome === 'interrupted') {
+                client.workerCancelled(request.runId);
+            } else {
+                client.workerFailed(request.runId, result.errorMessage ?? 'Codex reported a failure');
+            }
+        } catch (error) {
+            const detail =
+                error instanceof WorkerError
+                    ? `${error.code}: ${error.message}`
+                    : error instanceof Error
+                      ? error.message
+                      : 'official Codex worker failed';
+            client.workerFailed(request.runId, detail);
+        } finally {
+            activeWorkerRunId = undefined;
+        }
+    };
 
     const render = (): void => {
         view.update(state);
@@ -41,6 +121,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     client.on('connected', () => {
         state = { ...state, connected: true };
+        // Tell the app whether this companion can act as the official Codex worker, so it
+        // knows which backend to dispatch to. Presence of the extension is what is announced;
+        // an unreachable IPC router still fails the individual run with a typed error.
+        client.workerAvailable(codex.isExtensionInstalled);
         render();
     });
 
@@ -62,6 +146,17 @@ export function activate(context: vscode.ExtensionContext): void {
             void openFile(event.path);
             return;
         }
+        if (event.type === 'execute_run') {
+            void executeRun(event);
+            return;
+        }
+        if (event.type === 'cancel_run') {
+            // Only the run the worker is actually serving may be interrupted.
+            if (event.runId && event.runId === activeWorkerRunId) {
+                void codex.cancel(event.runId);
+            }
+            return;
+        }
         state = reduce(state, event);
         render();
     });
@@ -77,6 +172,11 @@ export function activate(context: vscode.ExtensionContext): void {
         ),
 
         vscode.commands.registerCommand('aiflow.cancelRun', () => {
+            // A worker run is interrupted at its exact official turn; otherwise the app
+            // cancels the run it owns itself.
+            if (activeWorkerRunId) {
+                void codex.cancel(activeWorkerRunId);
+            }
             if (!client.cancel()) {
                 void vscode.window.showWarningMessage('Aiflow is not connected.');
             }

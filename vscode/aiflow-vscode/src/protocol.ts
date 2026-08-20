@@ -31,11 +31,27 @@ export type BridgeEventType =
     | 'run_failed'
     | 'run_cancelled'
     | 'file_open'
-    | 'file_changed';
+    | 'file_changed'
+    /**
+     * v2: the macOS app asks the companion to execute a run through the official Codex
+     * extension. This is the one event that carries execution parameters, and it only ever
+     * travels app -> companion over the authenticated bridge.
+     */
+    | 'execute_run'
+    /** v2: interrupt the official turn serving this exact run. */
+    | 'cancel_run';
 
 export type BridgeCommandType =
     | 'auth'
     | 'ping'
+    /** v2 worker reports. Every one carries the runId it belongs to. */
+    | 'worker_accepted'
+    | 'worker_thread'
+    | 'worker_status'
+    | 'worker_completed'
+    | 'worker_failed'
+    | 'worker_cancelled'
+    | 'worker_available'
     | 'cancel'
     | 'approve'
     | 'deny'
@@ -74,11 +90,26 @@ export interface BridgeEvent {
     detail?: string;
     questions?: BridgeQuestion[];
     path?: string;
+
+    // v2 execute_run fields.
+    /** Correlates every worker report with the Aiflow run that asked for it. */
+    runId?: string;
+    /** Absolute repository path the run must execute in. */
+    workspacePath?: string;
+    /** The exact prompt text, submitted to Codex verbatim. */
+    prompt?: string;
 }
 
 export interface BridgeCommand {
     type: BridgeCommandType;
     requestId?: RequestId;
+
+    // v2 worker report fields.
+    runId?: string;
+    conversationId?: string;
+    turnId?: string;
+    workerState?: string;
+    message?: string;
     answers?: Record<string, string>;
     /** Only ever set on an `auth` command. Never logged or surfaced in the UI. */
     token?: string;
@@ -96,7 +127,9 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<BridgeEventType>([
     'run_failed',
     'run_cancelled',
     'file_open',
-    'file_changed'
+    'file_changed',
+    'execute_run',
+    'cancel_run'
 ]);
 
 /** Returns null for malformed JSON and unrecognized event types. Never throws. */
@@ -324,7 +357,8 @@ export function reduce(state: AiflowState, event: BridgeEvent): AiflowState {
             };
 
         default:
-            // file_open / file_changed are side effects, not state.
+            // file_open / file_changed / execute_run are side effects handled elsewhere,
+            // not view state.
             return state;
     }
 }
@@ -360,4 +394,36 @@ export function statusLabel(state: AiflowState): string {
         default:
             return state.runState;
     }
+}
+
+/** A validated execution request. Missing or malformed fields make the request unusable. */
+export interface ExecutionRequest {
+    runId: string;
+    workspacePath: string;
+    prompt: string;
+    model?: string;
+    effort?: string;
+}
+
+/**
+ * Validates an `execute_run` event into something the worker may act on.
+ *
+ * The companion refuses to guess: without a run id it could complete the wrong Aiflow job,
+ * and without an absolute workspace path or a prompt there is nothing coherent to run.
+ */
+export function parseExecutionRequest(event: BridgeEvent): ExecutionRequest | undefined {
+    if (event.type !== 'execute_run') {
+        return undefined;
+    }
+    const runId = (event.runId ?? '').trim();
+    const workspacePath = (event.workspacePath ?? '').trim();
+    const prompt = event.prompt ?? '';
+
+    if (!runId || !workspacePath || prompt.trim().length === 0) {
+        return undefined;
+    }
+    if (!workspacePath.startsWith('/')) {
+        return undefined; // only absolute local paths
+    }
+    return { runId, workspacePath, prompt, model: event.model, effort: event.effort };
 }

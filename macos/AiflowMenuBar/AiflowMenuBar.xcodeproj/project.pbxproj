@@ -22,6 +22,7 @@
 		6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */; };
 		796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */; };
 		7F117E936402AB6825198EDD /* CodexLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */; };
+		8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */; };
 		8203E7C47E0FF9185503BD47 /* BridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B76D46C558BE296D732DE958 /* BridgeProtocol.swift */; };
 		84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */; };
 		851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */; };
@@ -57,6 +58,7 @@
 		24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AiflowMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowBridgeServer.swift; sourceTree = "<group>"; };
+		30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficialWorkerTests.swift; sourceTree = "<group>"; };
 		30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitProjectValidationTests.swift; sourceTree = "<group>"; };
 		3EF41C3133082121F9E0B731 /* ChatURLTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURLTests.swift; sourceTree = "<group>"; };
 		45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
@@ -113,6 +115,7 @@
 				3EF41C3133082121F9E0B731 /* ChatURLTests.swift */,
 				7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */,
 				30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */,
+				30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */,
 				985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */,
 				74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */,
 			);
@@ -256,6 +259,7 @@
 				E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */,
 				CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */,
 				6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */,
+				8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */,
 				55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */,
 				796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */,
 			);

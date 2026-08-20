@@ -6,6 +6,7 @@ import {
     MAX_FRAME_BYTES,
     TOKEN_RELATIVE_PATH,
     LineBuffer,
+    parseExecutionRequest,
     encodeCommand,
     initialState,
     parseEvent,
@@ -301,4 +302,108 @@ test('outbound auth command carries the token and nothing else', () => {
 
 test('token path points at Aiflow application support state', () => {
     assert.equal(TOKEN_RELATIVE_PATH, 'Library/Application Support/Aiflow/bridge-token');
+});
+
+// MARK: v2 execution requests
+
+test('a well-formed execution request is accepted', () => {
+    const request = parseExecutionRequest({
+        type: 'execute_run',
+        runId: 'run-1',
+        workspacePath: '/repos/demo',
+        prompt: 'Report the branch.',
+        model: 'sol',
+        effort: 'low'
+    });
+
+    assert.deepEqual(request, {
+        runId: 'run-1',
+        workspacePath: '/repos/demo',
+        prompt: 'Report the branch.',
+        model: 'sol',
+        effort: 'low'
+    });
+});
+
+test('an execution request without a run id is refused', () => {
+    // Without a run id a completion could be attributed to the wrong Aiflow job.
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', workspacePath: '/repos/demo', prompt: 'x' }),
+        undefined
+    );
+});
+
+test('an execution request without a prompt or workspace is refused', () => {
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', runId: 'r', prompt: 'x' }),
+        undefined
+    );
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', runId: 'r', workspacePath: '/repos/demo' }),
+        undefined
+    );
+    assert.equal(
+        parseExecutionRequest({
+            type: 'execute_run',
+            runId: 'r',
+            workspacePath: '/repos/demo',
+            prompt: '   '
+        }),
+        undefined
+    );
+});
+
+test('a relative workspace path is refused', () => {
+    assert.equal(
+        parseExecutionRequest({
+            type: 'execute_run',
+            runId: 'r',
+            workspacePath: 'repos/demo',
+            prompt: 'x'
+        }),
+        undefined
+    );
+});
+
+test('only an execute_run event yields an execution request', () => {
+    assert.equal(
+        parseExecutionRequest({
+            type: 'run_started',
+            runId: 'r',
+            workspacePath: '/repos/demo',
+            prompt: 'x'
+        }),
+        undefined
+    );
+});
+
+test('execute_run and cancel_run parse as recognised events', () => {
+    assert.equal(parseEvent('{"type":"execute_run","runId":"r"}')?.type, 'execute_run');
+    assert.equal(parseEvent('{"type":"cancel_run","runId":"r"}')?.type, 'cancel_run');
+});
+
+test('an execute_run event is a worker instruction, not view state', () => {
+    const before = reduce(initialState(), { type: 'snapshot', runState: 'ready' });
+    const after = reduce(before, {
+        type: 'execute_run',
+        runId: 'r',
+        workspacePath: '/repos/demo',
+        prompt: 'x'
+    });
+    assert.deepEqual(after, before);
+});
+
+test('worker reports are outbound commands with their run id', () => {
+    for (const type of [
+        'worker_accepted',
+        'worker_thread',
+        'worker_status',
+        'worker_completed',
+        'worker_failed',
+        'worker_cancelled'
+    ] as const) {
+        const line = encodeCommand({ type, runId: 'run-1' });
+        assert.ok(line.includes('"runId":"run-1"'), type);
+        assert.ok(line.endsWith('\n'));
+    }
 });

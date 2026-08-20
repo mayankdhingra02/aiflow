@@ -49,6 +49,13 @@ final class AiflowBridgeServer: @unchecked Sendable {
         return listener != nil
     }
 
+    /// True when at least one companion has authenticated — i.e. a worker could serve a run.
+    var hasAuthenticatedClient: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return connections.values.contains { $0.isAuthenticated }
+    }
+
     var connectionCount: Int {
         lock.lock()
         defer { lock.unlock() }

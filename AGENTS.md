@@ -31,9 +31,11 @@ Aiflow has three surfaces. Only the first two execute anything.
   projects are one-click run targets; the clipboard supplies the prompt. It runs Codex through
   the **Codex App Server**, not `codex exec`, because only the App Server can surface approval
   and clarification requests to a human.
-- **VS Code companion** (`vscode/aiflow-vscode/`) — a thin live viewer/controller for the run
-  the menu-bar app already owns. It is not a Codex client, not a task engine, and not a
-  database.
+- **VS Code companion** (`vscode/aiflow-vscode/`) — both a live viewer/controller for a run
+  the menu-bar app owns itself, and the **worker** for the preferred execution path. On the
+  worker path the official `openai.chatgpt` extension owns and runs the Codex session, and the
+  companion drives it as a follower over Codex's local IPC router. The companion is still not a
+  Codex client, not a task engine, and not a database: it never starts a Codex process.
 
 ## Security invariants
 
@@ -60,6 +62,38 @@ Aiflow has three surfaces. Only the first two execute anything.
   must never clear a newer request.
 - Wire enums use the schema's hyphenated forms; the App Server rejects camelCased variants.
 - App Server messages omit the JSON-RPC `jsonrpc` field.
+
+### Execution workers
+
+Exactly one worker serves a run, and which one is explicit and observable:
+
+- **`OfficialCodexVSCodeWorker`** (preferred) — the official `openai.chatgpt` extension executes
+  the session; Aiflow drives it through the companion. Aiflow never launches `codex app-server`
+  or `codex exec` on this path, and never uses `chatgpt.implementTodo`.
+- **`LegacyAiflowCodexWorker`** (fallback) — Aiflow's own Codex App Server session, retained
+  until the official path is proven. Used when no companion is connected or the official
+  extension/IPC is unavailable.
+
+Never run both for one Aiflow run. Fallback must be visible, never silent ambiguity.
+
+### Official Codex worker invariants
+
+- Aiflow joins the official extension's IPC router as a follower. It never modifies, patches,
+  or redistributes the official extension.
+- A run is dispatched only to a conversation observed to appear *after* Aiflow asked for a new
+  panel. Never an arbitrary conversation the user already had open, and never a provisional
+  `client-new-thread:` id.
+- Model and reasoning effort are applied with `thread-follower-update-thread-settings` and that
+  request must succeed **before** `thread-follower-start-turn`. Fail closed: never run on
+  whatever the official UI happened to have selected.
+- Model ids and effort strings are translated in exactly one module.
+- Completion is correlated by exact `conversationId` + `turnId` from the durable session log.
+  Never by "most recently modified session".
+- Cancellation interrupts the exact conversation and turn of that run, and is idempotent.
+- Permission posture stays the official extension's own safe defaults (workspace-write,
+  on-request, user-reviewed). Aiflow never sends a sandbox or approval override, and never
+  broadens privileges to make a run succeed.
+- Approvals and user-input requests stay user-mediated.
 
 ### VS Code companion invariants
 

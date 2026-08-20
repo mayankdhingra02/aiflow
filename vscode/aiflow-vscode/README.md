@@ -1,16 +1,23 @@
 # Aiflow Companion (VS Code)
 
-A thin live viewer and controller for the Codex run the **Aiflow macOS menu-bar app**
-already owns.
+Two roles, over one authenticated local bridge:
 
-It is not a Codex client. It never starts Codex, never opens a second session, and does not
-depend on the official Codex extension. Aiflow remains the source of truth; this extension
-renders what Aiflow reports and sends back a small set of verbs.
+1. **Worker (preferred path).** The macOS app asks the companion to execute a run, and the
+   companion drives the **official OpenAI Codex extension** (`openai.chatgpt`) to do it. The
+   session runs and is visible in the official Codex UI.
+2. **Viewer/controller (legacy path).** When the app runs Codex itself, the companion mirrors
+   and controls that run.
+
+The companion never starts a Codex process, never opens a second session, and never modifies
+the official extension. It also never uses `chatgpt.implementTodo` or any UI automation — the
+prompt is submitted through Codex's own local client-coordination IPC as a *follower*.
 
 ```
 Aiflow menu-bar app  ──(127.0.0.1:47321, newline-delimited JSON)──  VS Code companion
-   owns the Codex                                                    views + controls
-   App Server session                                                the same run
+                                                                      │
+                                                    official Codex local IPC router
+                                                                      │
+                                                     openai.chatgpt extension runs Codex
 ```
 
 ## What it shows
@@ -38,6 +45,46 @@ Plus a status-bar item: `Aiflow: Connected` / `Running` / `Waiting for approval`
 Approve/Deny/Answer always carry the exact request id the bridge reported. Aiflow ignores a
 command whose id does not match what is currently pending, so a stale click cannot resolve a
 newer request.
+
+## Official Codex worker
+
+Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
+it if needed; it never bundles or redistributes it.
+
+For each run the companion:
+
+1. joins the official extension's local IPC router as an additional client,
+2. opens a **new** Codex panel and correlates only a conversation that appears afterwards —
+   an already-open conversation of yours is never used,
+3. applies the requested model and reasoning effort and **requires that to succeed**,
+4. submits the exact Aiflow prompt verbatim, then
+5. watches that one conversation's session log for that one turn's completion.
+
+Model/effort translation lives in one module (`src/codexIpc/models.ts`); nothing else
+hard-codes a Codex model id.
+
+### Permissions
+
+Aiflow sends no sandbox or approval overrides. The run inherits the official extension's own
+safe defaults (workspace-write, approvals on request, reviewed by you), and approval and
+question prompts stay in the official Codex UI where you answer them. A run can never become
+`danger-full-access` because another Codex thread was configured differently.
+
+### Fallback
+
+If the official extension is missing, its IPC is unreachable, or a fresh conversation cannot be
+correlated, the worker fails with a typed error and Aiflow falls back to running Codex itself.
+The fallback is explicit — the macOS app records which worker served each run.
+
+## Troubleshooting
+
+- **"official Codex is unavailable"** — install/enable `openai.chatgpt`, open a Codex panel
+  once, then retry. Aiflow reads the router socket at `~/.codex/ipc/ipc.sock`
+  (override with `CODEX_IPC_SOCKET`).
+- **The run never starts** — the official extension must be able to create a new panel;
+  check that `chatgpt.newCodexPanel` works from the command palette.
+- **Completion never arrives** — sessions are read from `~/.codex/sessions`
+  (override with `CODEX_HOME`).
 
 ## Safety boundaries
 
