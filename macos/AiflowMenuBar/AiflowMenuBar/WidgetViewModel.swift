@@ -568,8 +568,9 @@ final class WidgetViewModel: ObservableObject {
 
     private func finishSession() {
         let finishing = client
-        clearActiveRunContextAfterTerminalRelease()
         client = nil
+        runningProject = nil
+        activeHandoffContext = nil
         Task { await finishing?.stop() }
     }
 

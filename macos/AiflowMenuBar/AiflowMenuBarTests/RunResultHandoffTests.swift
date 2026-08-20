@@ -126,6 +126,7 @@ final class RunResultHandoffTests: XCTestCase {
         let now = sequenced([Date(timeIntervalSince1970: 1_700_000_100)])
         let viewModel = makeViewModel(handoffStore: store, now: now)
 
+        viewModel.setOfficialWorkerAvailable(true)
         viewModel.startRunForTesting(
             project,
             worker: .legacyAppServer,
@@ -138,6 +139,7 @@ final class RunResultHandoffTests: XCTestCase {
             project: project
         )
         viewModel.handleEventForTesting(.finished, project: project)
+        XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Manual")
 
         let handoff = try XCTUnwrap(store.handoff(runId: runId))
         XCTAssertEqual(handoff.outcome, .completed)
