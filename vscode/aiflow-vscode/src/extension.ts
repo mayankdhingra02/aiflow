@@ -8,7 +8,8 @@ import {
     initialState,
     parseExecutionRequest,
     reduce,
-    statusLabel
+    statusLabel,
+    terminalEvent
 } from './protocol';
 import { OfficialCodexHost } from './codexIpc/host';
 import { WorkerError } from './codexIpc/worker';
@@ -103,6 +104,11 @@ export function activate(context: vscode.ExtensionContext): void {
             } else {
                 client.workerFailed(request.runId, result.errorMessage ?? 'Codex reported a failure');
             }
+
+            // The panel must land on the same terminal state that was just reported, or it
+            // keeps showing the last transient one ("Running", "Cancelling") forever.
+            state = reduce(state, terminalEvent(result.outcome, result));
+            render();
         } catch (error) {
             const detail =
                 error instanceof WorkerError
@@ -111,6 +117,8 @@ export function activate(context: vscode.ExtensionContext): void {
                       ? error.message
                       : 'official Codex worker failed';
             client.workerFailed(request.runId, detail);
+            state = reduce(state, terminalEvent('failed', { errorMessage: detail }));
+            render();
         } finally {
             activeWorkerRunId = undefined;
         }

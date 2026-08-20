@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+    AiflowState,
     BRIDGE_HOST,
     BRIDGE_PORT,
     MAX_FRAME_BYTES,
@@ -12,7 +13,8 @@ import {
     initialState,
     parseEvent,
     reduce,
-    statusLabel
+    statusLabel,
+    terminalEvent
 } from '../protocol';
 
 test('bridge targets loopback only', () => {
@@ -424,4 +426,89 @@ test('a duplicate of the active run is ignored, not rejected', () => {
 
 test('a different run while one is active is rejected as busy', () => {
     assert.equal(admitRun('run-1', 'run-2'), 'reject-busy');
+});
+
+/** A connected companion; statusLabel reports "Disconnected" otherwise, whatever the run did. */
+function connectedState(): AiflowState {
+    return reduce(initialState(), { type: 'hello' });
+}
+
+// MARK: terminal companion state
+//
+// The companion reported terminal outcomes to the macOS app but left its own panel on the
+// last transient state, so a cancelled run still read "Cancelling" in VS Code.
+
+test('a completed run lands on completed and keeps the final message', () => {
+    const running = reduce(connectedState(), {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'running'
+    });
+
+    const state = reduce(running, terminalEvent('completed', { finalMessage: 'AIFLOW_OK' }));
+
+    assert.equal(state.runState, 'completed');
+    assert.equal(statusLabel(state), 'Completed');
+    assert.equal(state.lastMessage, 'AIFLOW_OK');
+    assert.equal(state.project, '/repos/demo', 'the project stays visible on the terminal state');
+});
+
+test('an interrupted run lands on cancelled, not stuck on cancelling', () => {
+    let state = reduce(connectedState(), { type: 'run_started', project: '/repos/demo' });
+    state = reduce(state, { type: 'run_status', runState: 'cancelling' });
+    assert.equal(statusLabel(state), 'Cancelling');
+
+    state = reduce(state, terminalEvent('interrupted'));
+
+    assert.equal(state.runState, 'cancelled');
+    assert.equal(statusLabel(state), 'Cancelled');
+});
+
+test('a failed result lands on failed and carries the reason', () => {
+    const state = reduce(connectedState(), terminalEvent('failed', { errorMessage: 'boom' }));
+
+    assert.equal(state.runState, 'failed');
+    assert.equal(statusLabel(state), 'Failed');
+    assert.equal(state.lastMessage, 'boom');
+});
+
+test('a thrown worker error is reported the same way as a failed result', () => {
+    const detail = 'thread_unavailable: no conversation';
+    const state = reduce(initialState(), terminalEvent('failed', { errorMessage: detail }));
+
+    assert.equal(state.runState, 'failed');
+    assert.equal(state.lastMessage, detail);
+});
+
+test('a failed outcome without a reason still says something useful', () => {
+    assert.equal(
+        reduce(initialState(), terminalEvent('failed')).lastMessage,
+        'Codex reported a failure'
+    );
+});
+
+test('a terminal outcome clears any pending approval or question', () => {
+    let state = reduce(initialState(), { type: 'approval_requested', requestId: 7, summary: 'npm i' });
+    assert.ok(state.pendingApproval);
+
+    state = reduce(state, terminalEvent('interrupted'));
+    assert.equal(state.pendingApproval, undefined);
+});
+
+test('a cancelled run does not block the next one', () => {
+    // cancelled -> launching -> running, with no stale cancellation state left behind.
+    let state = reduce(connectedState(), { type: 'run_started', project: '/repos/demo' });
+    state = reduce(state, terminalEvent('interrupted'));
+    assert.equal(state.runState, 'cancelled');
+
+    state = reduce(state, {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'launching'
+    });
+    assert.equal(state.runState, 'launching');
+    assert.equal(state.lastMessage, undefined, 'the previous run leaves no message behind');
+
+    state = reduce(state, { type: 'run_status', runState: 'running' });
+    assert.equal(statusLabel(state), 'Running');
 });

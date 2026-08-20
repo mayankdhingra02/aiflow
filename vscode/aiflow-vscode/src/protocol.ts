@@ -447,3 +447,30 @@ export function admitRun(
     }
     return activeRunId === requestedRunId ? 'ignore-duplicate' : 'reject-busy';
 }
+
+/** The outcome a worker run finished with. Mirrors `TurnResult['outcome']`. */
+export type TerminalOutcome = 'completed' | 'interrupted' | 'failed';
+
+/**
+ * The bridge event that describes how a run ended.
+ *
+ * The companion feeds this through `reduce` so its own panel lands on the same terminal state
+ * it reports to the macOS app — otherwise the panel keeps showing the last transient state
+ * ("Running", "Cancelling") after the run is over.
+ */
+export function terminalEvent(
+    outcome: TerminalOutcome,
+    detail?: { finalMessage?: string; errorMessage?: string }
+): BridgeEvent {
+    switch (outcome) {
+        case 'completed':
+            return { type: 'run_completed', message: detail?.finalMessage };
+        case 'interrupted':
+            return { type: 'run_cancelled' };
+        case 'failed':
+            return {
+                type: 'run_failed',
+                message: detail?.errorMessage ?? 'Codex reported a failure'
+            };
+    }
+}
