@@ -3,7 +3,8 @@ import { CodexIpcClient } from './client';
 import { OfficialCodexWorker, WorkerError, WorkerRunRequest } from './worker';
 import { defaultSessionsRoot, TurnResult } from './sessionWatcher';
 import { OFFICIAL_EXTENSION_ID } from './threadResolver';
-import { bootstrapFreshThread, productionBootstrapDeps } from './bootstrapper';
+import { bootstrapFreshThread, canonicalPath, productionBootstrapDeps } from './bootstrapper';
+import { ConversationCache } from './conversationCache';
 
 /**
  * Glue between VS Code and the official Codex worker.
@@ -22,6 +23,45 @@ export class OfficialCodexHost {
     private ipc: CodexIpcClient | undefined;
     private worker: OfficialCodexWorker | undefined;
     private lastDetail: string | undefined;
+
+    /**
+     * Live conversations per workspace, so the synthetic bootstrap is paid once rather than
+     * on every run. Survives IPC reconnects — our connection dropping says nothing about
+     * whether the official client still owns the conversation — and dies with this host.
+     */
+    private readonly conversations = new ConversationCache({
+        canonicalPath,
+        hasLiveOwner: (conversationId) => this.hasLiveOwner(conversationId),
+        bootstrap: (workspacePath) => this.bootstrapConversation(workspacePath)
+    });
+
+    /** Whether a remembered conversation can still be driven. */
+    private async hasLiveOwner(conversationId: string): Promise<boolean> {
+        const ipc = this.ipc;
+        if (!ipc || !ipc.isConnected) {
+            return false;
+        }
+        try {
+            await ipc.discoverThreadOwner(conversationId);
+            return true;
+        } catch {
+            // No owner: the VS Code client that owned this conversation is gone.
+            return false;
+        }
+    }
+
+    /** Mints one fresh conversation with a synthetic first turn. */
+    private async bootstrapConversation(workspacePath: string): Promise<string> {
+        const result = await bootstrapFreshThread(
+            workspacePath,
+            productionBootstrapDeps(
+                async (command, argument) =>
+                    await vscode.commands.executeCommand(command, argument),
+                defaultSessionsRoot()
+            )
+        );
+        return result.conversationId;
+    }
 
     /** Whether the official extension is present at all. */
     get isExtensionInstalled(): boolean {
@@ -73,24 +113,20 @@ export class OfficialCodexHost {
     }
 
     /**
-     * Mints one fresh official conversation with a synthetic first turn. The real Aiflow prompt
-     * is intentionally not an argument to this method; it is sent later through follower IPC.
+     * Picks the conversation for this run: the workspace's existing one when it still has an
+     * owner, otherwise a freshly bootstrapped one.
+     *
+     * The real Aiflow prompt is deliberately not an argument here — it is sent afterwards
+     * through follower IPC, never through the bootstrap command. The worker performs its own
+     * owner discovery before the turn regardless of what this returns.
      */
-    private async resolveConversation(
-        request: WorkerRunRequest
-    ): Promise<string> {
+    private async resolveConversation(request: WorkerRunRequest): Promise<string> {
         try {
-            const result = await bootstrapFreshThread(
-                request.workspacePath,
-                productionBootstrapDeps(
-                    async (command, argument) =>
-                        await vscode.commands.executeCommand(command, argument),
-                    defaultSessionsRoot()
-                )
-            );
-            return result.conversationId;
+            const resolved = await this.conversations.resolve(request.workspacePath);
+            return resolved.conversationId;
         } catch (error) {
-            const detail = error instanceof Error ? error.message : 'could not bootstrap a conversation';
+            const detail =
+                error instanceof Error ? error.message : 'could not bootstrap a conversation';
             throw new WorkerError('thread_unavailable', detail);
         }
     }
@@ -117,5 +153,6 @@ export class OfficialCodexHost {
         this.ipc?.dispose();
         this.ipc = undefined;
         this.worker = undefined;
+        this.conversations.clear();
     }
 }

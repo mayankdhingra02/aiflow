@@ -417,7 +417,8 @@ function isWithin(candidate: string, parent: string): boolean {
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function canonicalPath(value: string): string {
+/** Resolves a path for comparison, including macOS /tmp vs /private/tmp. */
+export function canonicalPath(value: string): string {
     try {
         return fs.realpathSync.native(value);
     } catch {

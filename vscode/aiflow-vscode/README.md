@@ -59,19 +59,39 @@ it if needed; it never bundles or redistributes it.
 For each run the companion:
 
 1. joins the official extension's local IPC router as an additional client,
-2. snapshots session-file identities, then uses one synthetic `implementTodo` turn with an
-   Aiflow-owned temporary file and unique nonce to mint a **new** Codex conversation,
-3. correlates only a new or changed session containing that nonce — an already-open conversation
-   is never used,
-4. verifies the bootstrap turn completed and recorded the requested workspace,
-5. applies the requested model and reasoning effort and **requires that to succeed**,
-6. submits the exact Aiflow prompt verbatim through follower IPC, then
-7. watches that one conversation's session log for that one turn's completion.
+2. picks the conversation for the workspace — reusing the one it already has when that
+   conversation still has a live owner, otherwise minting a new one (below),
+3. applies the requested model and reasoning effort and **requires that to succeed**,
+4. submits the exact Aiflow prompt verbatim through follower IPC, then
+5. watches that one conversation's session log for that one turn's completion.
 
-The bootstrap TODO wrapper exists only on the synthetic first turn. The user's prompt never
-reaches `chatgpt.implementTodo`. Bootstrap is intentionally performed once for the newly-created
-conversation; future turns should reuse its conversation id. The current companion retains the
-id for the active worker/run lifetime and does not yet add cross-run persistence.
+Minting a conversation, which happens only when there is nothing live to reuse:
+
+1. snapshot session-file identities, then run one synthetic `implementTodo` turn with an
+   Aiflow-owned temporary file and unique nonce,
+2. correlate only a new or changed session containing that nonce — an already-open conversation
+   is never adopted,
+3. verify the bootstrap turn completed and recorded the requested workspace.
+
+The bootstrap TODO wrapper exists only on that synthetic first turn. The user's prompt never
+reaches `chatgpt.implementTodo`.
+
+### Conversation reuse
+
+Bootstrap is paid **once per live conversation**, not once per run. The companion keeps a map
+of canonical workspace path → conversation id, so `/tmp/foo` and `/private/tmp/foo` share one
+entry. Before reusing an entry it confirms the conversation still has an owner; if the owning
+VS Code client has gone, the entry is dropped and a fresh conversation is minted — always
+before the real prompt is dispatched, never after a turn has started.
+
+Completing, cancelling, or failing a turn does **not** discard the conversation: none of those
+prove it unusable, and ownership is revalidated before every run anyway. Model and effort are
+re-applied per run, so they can change between runs on a reused conversation.
+
+The map is **in memory only**. An official conversation becomes unowned when its owning client
+disappears, and reattaching across an extension-host restart is unproven — so nothing is
+written to disk, and reloading VS Code may cost one more bootstrap. Persistent, reopenable
+pairing is future work.
 
 Model/effort translation lives in one module (`src/codexIpc/models.ts`); nothing else
 hard-codes a Codex model id.
