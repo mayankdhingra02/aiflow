@@ -75,6 +75,7 @@ final class WidgetViewModel: ObservableObject {
     /// the controller weakly, so there is no cycle. The bridge is a mirror only — the run
     /// never depends on it being present or connected.
     private var bridge: AiflowBridgeServer?
+    private var handoffTransportServer: HandoffTransportServer?
 
     private static let modelKey = "aiflow.model"
     private static let effortKey = "aiflow.effort"
@@ -595,6 +596,23 @@ final class WidgetViewModel: ObservableObject {
     func startCompanionBridgeIfNeeded() {
         guard bridge == nil else { return }
         attachBridge(AiflowBridgeServer())
+    }
+
+    /// Starts the browser-facing result transport once for the app lifetime.
+    /// This channel can only read pending result handoffs and acknowledge
+    /// exact run ids as delivered.
+    func startHandoffTransportIfNeeded() {
+        guard handoffTransportServer == nil else { return }
+
+        let server = HandoffTransportServer(
+            store: handoffStore
+        )
+
+        handoffTransportServer = server
+
+        if !server.start() {
+            notice = "Aiflow result transport could not start."
+        }
     }
 
     /// Applies a report from the official Codex worker.
