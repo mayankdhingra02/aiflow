@@ -38,6 +38,20 @@ final class OfficialWorkerTests: XCTestCase {
 
     private let project = SavedProject(name: "demo", path: "/repos/demo")
 
+    /// A real directory: starting a run requires the repository to exist.
+    private func makeRealRepository() throws -> String {
+        let url = directory.appendingPathComponent("repo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url.path
+    }
+
+    private func testConfig() -> CodexConfig {
+        CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low", "medium"],
+            defaultSandbox: "workspace-write")
+    }
+
     // MARK: - execute_run payload
 
     func testExecuteRunCarriesEverythingTheWorkerNeeds() {
@@ -246,6 +260,91 @@ final class OfficialWorkerTests: XCTestCase {
             BridgeCommand(type: .workerFailed, runId: "run-1", message: "turn_failed: model error"))
 
         XCTAssertTrue(viewModel.officialWorkerAvailable)
+    }
+
+    // MARK: - Menu-bar lifecycle state
+    //
+    // The popup renders these transitions inline, so the state machine behind them has to be
+    // exactly right: nothing may start or cancel a run before the user confirms.
+
+    func testRequestingARunOnlyEntersConfirming() throws {
+        let repo = try makeRealRepository()
+        let viewModel = makeViewModel()
+        viewModel.applyConfigForTesting(testConfig())
+        viewModel.setPromptForTesting("do the thing")
+        viewModel.addProject(at: repo)
+        let saved = try XCTUnwrap(viewModel.savedProjects.first)
+
+        viewModel.requestRun(saved)
+
+        XCTAssertEqual(viewModel.confirmingProject, saved)
+        XCTAssertFalse(viewModel.runState.isBusy, "confirming must not start Codex")
+        XCTAssertNil(viewModel.activeWorker)
+    }
+
+    func testBackingOutOfConfirmationReturnsToReady() throws {
+        let repo = try makeRealRepository()
+        let viewModel = makeViewModel()
+        viewModel.applyConfigForTesting(testConfig())
+        viewModel.setPromptForTesting("do the thing")
+        viewModel.addProject(at: repo)
+        viewModel.requestRun(try XCTUnwrap(viewModel.savedProjects.first))
+
+        viewModel.cancelConfirmation()
+
+        XCTAssertNil(viewModel.confirmingProject)
+        XCTAssertEqual(viewModel.runState, .ready)
+    }
+
+    /// The inline cancel prompt is view state; the run must keep going until the user confirms.
+    func testShowingTheCancelPromptDoesNotCancelTheRun() {
+        let viewModel = makeViewModel()
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        // Merely deciding to ask does nothing to the run.
+        XCTAssertEqual(viewModel.runState, .running(project))
+        XCTAssertTrue(viewModel.isRunning)
+
+        viewModel.cancelRun()
+        XCTAssertEqual(viewModel.runState, .cancelling(project))
+    }
+
+    /// Cancelling while Codex waits on an approval is reachable from the inline panel.
+    func testCancelWorksWhileAnApprovalIsPending() {
+        let viewModel = makeViewModel()
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil,
+                permissionProfile: nil), project: project)
+
+        XCTAssertNotNil(viewModel.pendingApproval)
+        XCTAssertTrue(viewModel.isRunning, "an approval still counts as a live run")
+
+        viewModel.cancelRun()
+
+        XCTAssertEqual(viewModel.runState, .cancelling(project))
+    }
+
+    /// Approval and question requests are plain view-model state, so they render inline.
+    func testPendingRequestsAreRepresentableWithoutAnySheet() {
+        let viewModel = makeViewModel()
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        viewModel.handleEventForTesting(
+            .inputRequested(
+                id: .integer(9),
+                questions: [
+                    QuestionItem(
+                        id: "q1", header: "H", question: "Which?",
+                        options: [QuestionOption(label: "v1", description: "Stable")],
+                        isOther: true, isSecret: false)
+                ]), project: project)
+
+        let pending = viewModel.pendingQuestion
+        XCTAssertEqual(pending?.id, .integer(9))
+        XCTAssertEqual(pending?.questions.first?.options.first?.label, "v1")
+        XCTAssertEqual(pending?.questions.first?.allowsFreeForm, true)
     }
 
     // MARK: - Security posture

@@ -5,71 +5,155 @@ struct MenuBarView: View {
     @ObservedObject var viewModel: WidgetViewModel
     @State private var renaming: SavedProject?
     @State private var removing: SavedProject?
-    @State private var showingCancelConfirmation = false
+    @State private var confirmingCancel = false
+
+    /// What the window is currently asking the user for.
+    ///
+    /// Everything renders inline in the one `MenuBarExtra` window. Sheets and alerts are
+    /// deliberately not used here: presenting either one takes key window away from a
+    /// `.menuBarExtraStyle(.window)` popover, which macOS then dismisses — so the popup
+    /// vanished mid-interaction and the user had to click the menu bar icon again.
+    private enum Mode: Equatable {
+        case normal
+        case confirmingCancel
+        case approval
+        case question
+        case confirmingRun(SavedProject)
+        case renaming(SavedProject)
+        case removing(SavedProject)
+    }
+
+    private var mode: Mode {
+        // A cancel the user already asked for outranks anything the run is waiting on.
+        if confirmingCancel, viewModel.isRunning { return .confirmingCancel }
+        if viewModel.pendingApproval != nil { return .approval }
+        if viewModel.pendingQuestion != nil { return .question }
+        if let project = viewModel.confirmingProject { return .confirmingRun(project) }
+        if let project = renaming { return .renaming(project) }
+        if let project = removing { return .removing(project) }
+        return .normal
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            promptSection
-            selectorsSection
-            projectsSection
+            switch mode {
+            case .normal:
+                promptSection
+                selectorsSection
+                projectsSection
+                Divider()
+                statusSection
 
-            Divider()
-            statusSection
+            case .confirmingRun(let project):
+                runConfirmPanel(project)
+
+            case .confirmingCancel:
+                cancelConfirmPanel
+
+            case .approval:
+                if let request = viewModel.pendingApproval {
+                    ApprovalPanel(request: request, viewModel: viewModel)
+                }
+
+            case .question:
+                if let question = viewModel.pendingQuestion {
+                    QuestionPanel(question: question, viewModel: viewModel)
+                        // Fresh answer state per request.
+                        .id(question.id.notificationValue)
+                }
+
+            case .renaming(let project):
+                RenamePanel(project: project) { newName in
+                    if let newName { viewModel.rename(project, to: newName) }
+                    renaming = nil
+                }
+
+            case .removing(let project):
+                removePanel(project)
+            }
         }
         .padding(14)
         .frame(width: 320)
         .task { await viewModel.refresh() }
         .onAppear { viewModel.popoverDidBecomeVisible() }
         .onDisappear { viewModel.popoverDidBecomeHidden() }
-        .sheet(item: $renaming) { project in
-            RenameSheet(project: project) { viewModel.rename(project, to: $0) }
-        }
-        .sheet(isPresented: confirmBinding) {
-            if let project = viewModel.confirmingProject {
-                RunConfirmSheet(project: project, viewModel: viewModel)
-            }
-        }
-        .sheet(isPresented: approvalBinding) {
-            if let request = viewModel.pendingApproval {
-                ApprovalSheet(request: request, viewModel: viewModel)
-            }
-        }
-        .sheet(isPresented: questionBinding) {
-            if let question = viewModel.pendingQuestion {
-                QuestionSheet(question: question, viewModel: viewModel)
-            }
-        }
-        .alert("Remove project?", isPresented: removeBinding, presenting: removing) { project in
-            Button("Cancel", role: .cancel) { removing = nil }
-            Button("Remove", role: .destructive) {
-                viewModel.remove(project)
-                removing = nil
-            }
-        } message: { project in
-            Text("Aiflow will forget \(project.name). The repository on disk is not changed.")
-        }
-        .alert("Cancel Codex run?", isPresented: $showingCancelConfirmation) {
-            Button("Keep Running", role: .cancel) {}
-            Button("Cancel Run", role: .destructive) { viewModel.cancelRun() }
-        } message: {
-            Text("Codex will stop and the current approval or question, if any, will be dismissed.")
+        // A run that ends on its own retires a cancel prompt that is no longer meaningful.
+        .onChange(of: viewModel.isRunning) { running in
+            if !running { confirmingCancel = false }
         }
     }
 
-    // Sheets are driven by run state, so they cannot be dismissed into an inconsistent state.
-    private var confirmBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.confirmingProject != nil },
-            set: { if !$0 { viewModel.cancelConfirmation() } })
+    // MARK: - Inline lifecycle panels
+
+    private func runConfirmPanel(_ project: SavedProject) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Run Prompt?").font(.headline)
+
+            field("Project", project.name)
+            field(
+                "Model",
+                viewModel.models.first { $0.role == viewModel.selectedModelRole }?.displayName
+                    ?? viewModel.selectedModelRole)
+            field("Thinking", displayNameForEffort(viewModel.selectedEffort))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Prompt").font(.caption).foregroundStyle(.secondary)
+                Text(String(viewModel.clipboardPrompt.prefix(200)))
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Back") { viewModel.cancelConfirmation() }
+                Spacer()
+                Button("Run Codex") { viewModel.confirmRun() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
     }
-    private var approvalBinding: Binding<Bool> {
-        Binding(get: { viewModel.pendingApproval != nil }, set: { _ in })
+
+    private var cancelConfirmPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Cancel Codex run?").font(.headline)
+            Text("Codex will stop and the current approval or question, if any, will be dismissed.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Keep Running") { confirmingCancel = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Cancel Run", role: .destructive) {
+                    viewModel.cancelRun()
+                    confirmingCancel = false
+                }
+            }
+        }
     }
-    private var questionBinding: Binding<Bool> {
-        Binding(get: { viewModel.pendingQuestion != nil }, set: { _ in })
+
+    private func removePanel(_ project: SavedProject) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Remove project?").font(.headline)
+            Text("Aiflow will forget \(project.name). The repository on disk is not changed.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Cancel") { removing = nil }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Remove", role: .destructive) {
+                    viewModel.remove(project)
+                    removing = nil
+                }
+            }
+        }
     }
-    private var removeBinding: Binding<Bool> {
-        Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })
+
+    private func field(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.callout)
+        }
     }
 
     // MARK: - Sections
@@ -202,7 +286,7 @@ struct MenuBarView: View {
                     .font(.caption).foregroundStyle(statusColor)
                 Spacer()
                 if viewModel.isRunning {
-                    Button("Cancel Run") { showingCancelConfirmation = true }
+                    Button("Cancel Run") { confirmingCancel = true }
                         .buttonStyle(.borderless).font(.caption2)
                 }
             }
@@ -251,50 +335,9 @@ struct MenuBarView: View {
     }
 }
 
-// MARK: - Sheets
+// MARK: - Inline panels
 
-private struct RunConfirmSheet: View {
-    let project: SavedProject
-    @ObservedObject var viewModel: WidgetViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Run Prompt?").font(.headline)
-
-            field("Project", project.name)
-            field(
-                "Model",
-                viewModel.models.first { $0.role == viewModel.selectedModelRole }?.displayName
-                    ?? viewModel.selectedModelRole)
-            field("Thinking", displayNameForEffort(viewModel.selectedEffort))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Prompt").font(.caption).foregroundStyle(.secondary)
-                Text(String(viewModel.clipboardPrompt.prefix(200)))
-                    .font(.caption).fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack {
-                Button("Cancel") { dismiss() }
-                Spacer()
-                Button("Run Codex") { viewModel.confirmRun() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .frame(width: 320)
-    }
-
-    private func field(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.callout)
-        }
-    }
-}
-
-private struct ApprovalSheet: View {
+private struct ApprovalPanel: View {
     let request: ApprovalRequest
     @ObservedObject var viewModel: WidgetViewModel
 
@@ -330,14 +373,12 @@ private struct ApprovalSheet: View {
                     .keyboardShortcut(request.prefersDeny ? nil : .defaultAction)
             }
         }
-        .padding(16)
-        .frame(width: 330)
     }
 }
 
 /// Answers every question in one request. A request may carry several questions, each
 /// either a set of options or free text, and all of them must be answered.
-private struct QuestionSheet: View {
+private struct QuestionPanel: View {
     let question: UserQuestion
     @ObservedObject var viewModel: WidgetViewModel
     @State private var answers: [String: String] = [:]
@@ -360,7 +401,7 @@ private struct QuestionSheet: View {
                     }
                 }
             }
-            .frame(maxHeight: 260)
+            .frame(maxHeight: 220)
 
             HStack {
                 Button("Cancel Run") { viewModel.cancelRun() }
@@ -370,8 +411,6 @@ private struct QuestionSheet: View {
                     .disabled(!isComplete)
             }
         }
-        .padding(16)
-        .frame(width: 340)
     }
 
     @ViewBuilder
@@ -432,15 +471,15 @@ private struct QuestionSheet: View {
     }
 }
 
-private struct RenameSheet: View {
+private struct RenamePanel: View {
     let project: SavedProject
-    let onRename: (String) -> Void
+    /// nil means the user backed out.
+    let onFinish: (String?) -> Void
     @State private var name: String
-    @Environment(\.dismiss) private var dismiss
 
-    init(project: SavedProject, onRename: @escaping (String) -> Void) {
+    init(project: SavedProject, onFinish: @escaping (String?) -> Void) {
         self.project = project
-        self.onRename = onRename
+        self.onFinish = onFinish
         _name = State(initialValue: project.name)
     }
 
@@ -449,17 +488,13 @@ private struct RenameSheet: View {
             Text("Rename Project").font(.headline)
             TextField("Name", text: $name).textFieldStyle(.roundedBorder)
             HStack {
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { onFinish(nil) }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save") {
-                    onRename(name)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Save") { onFinish(name) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(16)
-        .frame(width: 280)
     }
 }
