@@ -18,6 +18,15 @@ git init -q && printf '# scratch\n' > README.md && git add -A && git commit -qm 
 4. Launch the Aiflow companion (F5 from `vscode/aiflow-vscode`) and confirm the status bar
    shows **Aiflow: Connected**.
 5. In the Aiflow popover, add `/tmp/aiflow-acceptance` as a saved project.
+6. Before starting the acceptance run, enable the official worker:
+
+   ```json
+   "aiflow.officialWorker.enabled": true
+   ```
+
+   Change this in VS Code Settings or `settings.json`. The companion refreshes availability
+   dynamically; if the menu-bar app still shows the legacy worker, run `Aiflow: Reconnect` or
+   reload the companion window.
 
 ## 1–4. Exact prompt reaches a new official Codex conversation
 

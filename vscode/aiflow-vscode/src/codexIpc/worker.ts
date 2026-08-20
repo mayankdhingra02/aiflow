@@ -86,6 +86,7 @@ const DEFAULT_POLL_INTERVAL_MS = 400;
 
 export class OfficialCodexWorker {
     private active: WorkerHandle | undefined;
+    private activeRunId: string | undefined;
     private cancelled = false;
 
     constructor(private readonly deps: WorkerDeps) {}
@@ -103,6 +104,8 @@ export class OfficialCodexWorker {
      * does not durably take effect on an existing thread.
      */
     async run(request: WorkerRunRequest, options: WorkerRunOptions = {}): Promise<TurnResult> {
+        this.activeRunId = request.runId;
+        this.cancelled = false;
         try {
             return await this.execute(request, options);
         } finally {
@@ -110,6 +113,7 @@ export class OfficialCodexWorker {
             // timeout — the run is over. A stale handle would otherwise let a later cancel
             // interrupt a conversation this worker no longer owns.
             this.active = undefined;
+            this.activeRunId = undefined;
             this.cancelled = false;
         }
     }
@@ -124,8 +128,6 @@ export class OfficialCodexWorker {
         const now = this.deps.now ?? (() => Date.now());
         const findSession = this.deps.findSession ?? findSessionFile;
 
-        this.cancelled = false;
-
         // 1. Which official conversation should this run use?
         const conversationId = await this.deps.resolveConversation(request);
         if (!conversationId || isProvisionalConversationId(conversationId)) {
@@ -134,11 +136,22 @@ export class OfficialCodexWorker {
                 'no official Codex conversation could be resolved for this run'
             );
         }
+
+        // A cancel may arrive while the synthetic bootstrap is still creating the conversation.
+        // There is no real turn to interrupt yet, so consume the latch before any owner lookup,
+        // settings update, or real user prompt can be submitted.
+        if (this.cancelled) {
+            return interruptedBeforeTurn();
+        }
+
         this.active = { runId: request.runId, conversationId };
         emit({ type: 'thread', runId: request.runId, conversationId });
 
         // 2. Who owns that conversation right now?
         const owner = await this.discoverOwner(conversationId);
+        if (this.cancelled) {
+            return interruptedBeforeTurn();
+        }
 
         // 3. Apply model + effort and require success. Fail closed: running on whatever the
         //    official UI happened to have selected is not acceptable.
@@ -152,9 +165,29 @@ export class OfficialCodexWorker {
             );
         }
 
-        // 4. Submit the exact prompt. The turn must be started before the session log is
-        //    opened: a conversation that has never taken a turn has no session file yet, so
-        //    waiting for one first would deadlock.
+        if (this.cancelled) {
+            return interruptedBeforeTurn();
+        }
+
+        // The synthetic bootstrap has already created this conversation's session file. Locate
+        // it and drain all bootstrap history before starting the real turn. This makes fallback
+        // task_started inference safe if start-turn does not return a turn id.
+        const sessionPath = await this.waitForSession(
+            conversationId,
+            findSession,
+            delay,
+            now,
+            options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS,
+            options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+        );
+        const tail = (this.deps.createTail ?? ((p: string) => new SessionTail(p)))(sessionPath);
+        tail.readNew();
+
+        if (this.cancelled) {
+            return interruptedBeforeTurn();
+        }
+
+        // 4. Submit the exact prompt.
         emit({ type: 'status', runId: request.runId, state: 'starting' });
         let startResponse: unknown;
         try {
@@ -172,17 +205,8 @@ export class OfficialCodexWorker {
             emit({ type: 'turn', runId: request.runId, conversationId, turnId });
         }
 
-        const sessionPath = await this.waitForSession(
-            conversationId,
-            findSession,
-            delay,
-            now,
-            options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS,
-            options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-        );
-        const tail = (this.deps.createTail ?? ((p: string) => new SessionTail(p)))(sessionPath);
-
-        // 6. Learn the exact turn id, then wait for that exact turn to finish.
+        // 5. Learn the exact turn id, then wait for that exact turn to finish. The tail starts
+        // after the bootstrap drain, so fallback inference can only see records from this turn.
         const deadline = now() + (options.completionTimeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS);
         let result: TurnResult | undefined;
 
@@ -267,14 +291,20 @@ export class OfficialCodexWorker {
      * worker started — never whatever conversation happens to be active in the UI.
      */
     async cancel(runId: string): Promise<boolean> {
-        const handle = this.active;
-        if (!handle || handle.runId !== runId) {
+        if (this.activeRunId !== runId) {
             return false; // stale or unknown run: nothing of ours to cancel
         }
         if (this.cancelled) {
             return true;
         }
         this.cancelled = true;
+
+        const handle = this.active;
+        if (!handle) {
+            // Bootstrap is still resolving and no conversation exists yet. The latch is
+            // consumed by execute() as soon as bootstrap returns.
+            return true;
+        }
 
         try {
             const owner = await this.deps.ipc.discoverThreadOwner(handle.conversationId);
@@ -284,6 +314,10 @@ export class OfficialCodexWorker {
             throw new WorkerError('ipc_unavailable', `could not interrupt turn: ${describe(error)}`);
         }
     }
+}
+
+function interruptedBeforeTurn(): TurnResult {
+    return { outcome: 'interrupted', turnId: '' };
 }
 
 function describe(error: unknown): string {

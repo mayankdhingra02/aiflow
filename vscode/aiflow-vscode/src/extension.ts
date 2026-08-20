@@ -39,6 +39,13 @@ export function activate(context: vscode.ExtensionContext): void {
     const codex = new OfficialCodexHost();
     context.subscriptions.push({ dispose: () => codex.dispose() });
 
+    const announceOfficialWorker = (): void => {
+        const enabled = vscode.workspace
+            .getConfiguration()
+            .get<boolean>('aiflow.officialWorker.enabled', false);
+        client.workerAvailable(enabled && codex.isExtensionInstalled);
+    };
+
     /** The run the official worker is currently executing, if any. */
     let activeWorkerRunId: string | undefined;
 
@@ -127,12 +134,17 @@ export function activate(context: vscode.ExtensionContext): void {
         // The official worker remains opt-in pending final app-level acceptance. When enabled,
         // the host creates a fresh thread through the synthetic bootstrapper and never selects
         // an arbitrary conversation already open in the user's UI.
-        const officialEnabled = vscode.workspace
-            .getConfiguration()
-            .get<boolean>('aiflow.officialWorker.enabled', false);
-        client.workerAvailable(officialEnabled && codex.isExtensionInstalled);
+        announceOfficialWorker();
         render();
     });
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('aiflow.officialWorker.enabled')) {
+                announceOfficialWorker();
+            }
+        })
+    );
 
     client.on('authFailed', () => {
         // No token file yet, so Aiflow will send nothing beyond its greeting.

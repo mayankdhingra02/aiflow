@@ -164,6 +164,20 @@ test('pre-existing sessions and stale nonce content cannot satisfy a bootstrap',
     assert.deepEqual(h.removed, [BOOTSTRAP_FILE]);
 });
 
+test('a changed pre-existing session is rejected even when it contains the nonce', async () => {
+    const old = '/sessions/old.jsonl';
+    const h = harness(
+        new Map([[old, identity(99, 2)]]),
+        new Map([[old, sessionRecords()]])
+    );
+
+    await assert.rejects(
+        () => bootstrapFreshThread(REPOSITORY, h.deps, { discoveryTimeoutMs: 100, pollIntervalMs: 10 }),
+        (error: BootstrapError) => error.code === 'conversation_not_found'
+    );
+    assert.deepEqual(h.removed, [BOOTSTRAP_FILE]);
+});
+
 test('a session without the expected completion marker does not complete the bootstrap', async () => {
     const candidate = '/sessions/new.jsonl';
     const h = harness(

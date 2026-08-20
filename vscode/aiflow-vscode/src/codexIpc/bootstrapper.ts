@@ -98,8 +98,8 @@ export function bootstrapArgument(
  * Create a fresh official conversation by making one synthetic implementTodo turn.
  *
  * The session boundary is captured before dispatch. After dispatch, only files that are new or
- * whose metadata changed are read, and only a file containing this invocation's nonce qualifies.
- * This prevents an unrelated open Codex session from being selected by recency.
+ * that did not exist at the boundary are read, and only a new file containing this invocation's
+ * nonce qualifies. A changed pre-existing session is rejected rather than adopted.
  */
 export async function bootstrapFreshThread(
     repositoryPath: string,
@@ -343,9 +343,8 @@ function findNonceCandidate(
     readSession: (file: string) => SessionRecord[],
     nonce: string
 ): string | undefined {
-    for (const [file, identity] of snapshot()) {
-        const previous = before.get(file);
-        if (previous && sameIdentity(previous, identity)) {
+    for (const [file] of snapshot()) {
+        if (before.has(file)) {
             continue;
         }
         const records = readSession(file);
@@ -411,15 +410,6 @@ async function waitFor<T>(
 
 function recordContains(record: SessionRecord, value: string): boolean {
     return JSON.stringify(record).includes(value);
-}
-
-function sameIdentity(left: SessionFileIdentity, right: SessionFileIdentity): boolean {
-    return (
-        left.size === right.size &&
-        left.mtimeMs === right.mtimeMs &&
-        left.ino === right.ino &&
-        left.dev === right.dev
-    );
 }
 
 function isWithin(candidate: string, parent: string): boolean {

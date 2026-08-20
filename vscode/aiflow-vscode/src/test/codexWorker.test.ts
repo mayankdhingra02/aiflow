@@ -333,6 +333,57 @@ test('cancel is idempotent', async () => {
     );
 });
 
+test('cancel during bootstrap latches and prevents the real prompt from starting', async () => {
+    const ipc = new FakeIpc();
+    let finishBootstrap!: (conversationId: string) => void;
+    const bootstrap = new Promise<string>((resolve) => {
+        finishBootstrap = resolve;
+    });
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => bootstrap,
+        findSession: () => '/fake/session.jsonl',
+        createTail: () => scriptedTail([[], [started('real')], [complete('real', 'should-not-run')]])
+    });
+
+    const run = worker.run(REQUEST);
+    await Promise.resolve();
+    assert.equal(await worker.cancel(REQUEST.runId), true);
+    assert.equal(await worker.cancel(REQUEST.runId), true, 'bootstrap cancellation is idempotent');
+    assert.equal(worker.activeHandle, undefined, 'no conversation exists during bootstrap');
+
+    finishBootstrap(CONV);
+    const result = await run;
+
+    assert.equal(result.outcome, 'interrupted');
+    assert.ok(!ipc.calls.some((call) => call.op === 'startTurn'));
+    assert.ok(!ipc.calls.some((call) => call.args.includes(REQUEST.prompt)));
+});
+
+test('a stale cancel does not affect a run that is still bootstrapping', async () => {
+    const ipc = new FakeIpc();
+    let finishBootstrap!: (conversationId: string) => void;
+    const bootstrap = new Promise<string>((resolve) => {
+        finishBootstrap = resolve;
+    });
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => bootstrap,
+        findSession: () => '/fake/session.jsonl',
+        createTail: () => scriptedTail([[], [started('real')], [complete('real', 'ok')]]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
+
+    const run = worker.run(REQUEST);
+    await Promise.resolve();
+    assert.equal(await worker.cancel('stale-run'), false);
+    finishBootstrap(CONV);
+
+    assert.equal((await run).outcome, 'completed');
+    assert.ok(!ipc.calls.some((call) => call.op === 'interruptTurn'));
+});
+
 // MARK: fresh-thread correlation
 
 test('provisional ids are recognised', () => {
@@ -429,21 +480,22 @@ test('a timeout fails cleanly instead of picking some other thread', async () =>
 });
 
 // MARK: ordering and turn-id source
-//
-// Measured against the real extension: a conversation that has never taken a turn has no
-// session file, so the turn must be started before the session log is opened.
 
-test('the turn is started before the session log is opened', async () => {
+test('the bootstrapped session is opened and drained before the real turn starts', async () => {
     const ipc = new FakeIpc();
     const worker = new OfficialCodexWorker({
         ipc: ipc as never,
         resolveConversation: async () => CONV,
-        // Recorded into the same list as the IPC calls so the true interleaving is visible.
         findSession: () => {
             ipc.calls.push({ op: 'findSession', args: [] });
             return '/fake/session.jsonl';
         },
-        createTail: () => scriptedTail([[started('turn-1')], [complete('turn-1', 'ok')]]),
+        createTail: () =>
+            scriptedTail([
+                [started('bootstrap'), complete('bootstrap', 'bootstrap')],
+                [started('turn-1')],
+                [complete('turn-1', 'ok')]
+            ]),
         delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
         now: () => Date.now()
     });
@@ -451,13 +503,13 @@ test('the turn is started before the session log is opened', async () => {
     await worker.run(REQUEST);
 
     const ops = ipc.calls.map((c) => c.op);
-    const startIndex = ops.indexOf('startTurn');
     const sessionIndex = ops.indexOf('findSession');
+    const startIndex = ops.indexOf('startTurn');
 
     assert.ok(startIndex >= 0 && sessionIndex >= 0, 'both steps happened');
     assert.ok(
-        startIndex < sessionIndex,
-        `start-turn must precede session lookup, got ${JSON.stringify(ops)}`
+        sessionIndex < startIndex,
+        `session lookup must precede start-turn, got ${JSON.stringify(ops)}`
     );
 });
 
@@ -484,12 +536,26 @@ test('turn ids are read from several plausible response shapes', () => {
     assert.equal(turnIdFromStartResponse(undefined), undefined);
 });
 
-test('without a turn id in the response the first observed task_started is used', async () => {
+test('without a turn id the fallback ignores bootstrap history and selects the real turn', async () => {
     const ipc = new FakeIpc();
     ipc.startTurnResult = {};
-    const worker = makeWorker(ipc, [[started('turn-1')], [complete('turn-1', 'ok')]]);
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => CONV,
+        findSession: () => '/fake/session.jsonl',
+        createTail: () =>
+            scriptedTail([
+                [started('bootstrap-turn'), complete('bootstrap-turn', 'BOOTSTRAP_RESULT')],
+                [started('real-turn')],
+                [complete('real-turn', 'REAL_RESULT')]
+            ]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
 
-    assert.equal((await worker.run(REQUEST)).turnId, 'turn-1');
+    const result = await worker.run(REQUEST);
+    assert.equal(result.turnId, 'real-turn');
+    assert.equal(result.finalMessage, 'REAL_RESULT');
 });
 
 test('a failed run leaves no active handle for a later cancel', async () => {
