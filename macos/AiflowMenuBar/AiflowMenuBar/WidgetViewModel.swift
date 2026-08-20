@@ -268,11 +268,6 @@ final class WidgetViewModel: ObservableObject {
         guard case .confirming(let project) = runState else { return }
         guard let modelId = resolvedModelId, hasPrompt else { return }
 
-        guard let codexURL = CodexLocator.resolve() else {
-            runState = .failed(project: project, message: "Codex not installed")
-            return
-        }
-
         let prompt = clipboardPrompt  // full clipboard text, never the preview
         let effort = selectedEffort
         lastMessage = ""
@@ -295,7 +290,17 @@ final class WidgetViewModel: ObservableObject {
             return
         }
 
+        // Only the legacy path needs Aiflow's own Codex executable; the official worker runs
+        // inside the companion's editor and has its own runtime.
         activeWorker = .legacyAppServer
+        guard let codexURL = CodexLocator.resolve() else {
+            activeWorker = nil
+            activeRunId = nil
+            runningProject = nil
+            runState = .failed(project: project, message: "Codex not installed")
+            return
+        }
+
         let client = CodexAppServerClient()
         self.client = client
 

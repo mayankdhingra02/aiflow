@@ -103,6 +103,21 @@ export class OfficialCodexWorker {
      * does not durably take effect on an existing thread.
      */
     async run(request: WorkerRunRequest, options: WorkerRunOptions = {}): Promise<TurnResult> {
+        try {
+            return await this.execute(request, options);
+        } finally {
+            // Whatever happened — owner discovery, settings, session resolution, start, or a
+            // timeout — the run is over. A stale handle would otherwise let a later cancel
+            // interrupt a conversation this worker no longer owns.
+            this.active = undefined;
+            this.cancelled = false;
+        }
+    }
+
+    private async execute(
+        request: WorkerRunRequest,
+        options: WorkerRunOptions
+    ): Promise<TurnResult> {
         const execution = resolveExecution(request.model, request.effort);
         const emit = options.onEvent ?? ((): void => {});
         const delay = this.deps.delay ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -200,7 +215,6 @@ export class OfficialCodexWorker {
             );
         }
 
-        this.active = undefined;
         return result;
     }
 

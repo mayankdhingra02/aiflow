@@ -48,6 +48,10 @@ newer request.
 
 ## Official Codex worker
 
+> **Status: experimental, off by default.** Enable with `aiflow.officialWorker.enabled`.
+> Creating a *fresh* official Codex conversation has not been proven end to end, so Aiflow
+> keeps using its own Codex worker until it is. See "Known gaps" below.
+
 Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
 it if needed; it never bundles or redistributes it.
 
@@ -69,6 +73,33 @@ Aiflow sends no sandbox or approval overrides. The run inherits the official ext
 safe defaults (workspace-write, approvals on request, reviewed by you), and approval and
 question prompts stay in the official Codex UI where you answer them. A run can never become
 `danger-full-access` because another Codex thread was configured differently.
+
+### Wire protocol
+
+Requests use the router's envelope:
+
+```
+{ type: "request", requestId, sourceClientId, version, method, params,
+  targetClientId?, timeoutMs? }
+```
+
+`targetClientId` is an **envelope** field, never part of a follower's `params`. Responses are
+matched by `requestId` and carry `resultType`; `thread-owner-discovery` answers with an empty
+`result` and names the owner in `handledByClientId`.
+
+Request versions follow the official extension's own table: owner-discovery 1, start-turn 1,
+update-thread-settings 1, interrupt-turn 4 — dropping to 3 when no `expectedTurnId` is known,
+exactly as the extension's own version function does. Cancellation sends
+`{ conversationId, mode: "user-stop", expectedTurnId }`.
+
+### Known gaps
+
+- **Fresh-thread creation is unproven.** The official extension uses provisional
+  `client-new-thread:` ids, and it is not established whether a real conversation exists before
+  the first submission. Until an experiment settles it, the worker is opt-in and a fresh thread
+  that cannot be correlated fails with a typed error rather than borrowing one of your existing
+  conversations.
+- **No end-to-end acceptance run has passed yet.** See `ACCEPTANCE.md`.
 
 ### Fallback
 

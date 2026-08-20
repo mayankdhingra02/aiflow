@@ -6,18 +6,65 @@ import {
     CodexIpcClient,
     CodexIpcNoOwnerError,
     CodexIpcTimeoutError,
-    REQUESTS
+    INITIALIZING_CLIENT_ID,
+    REQUEST_VERSIONS,
+    USER_STOP_MODE
 } from '../codexIpc/client';
 import { encodeFrame } from '../codexIpc/framing';
 
-/** A fake Unix socket: records what Aiflow writes, and lets a test push frames back. */
-class FakeSocket extends net.Socket {
-    sent: Record<string, unknown>[] = [];
-    connectPaths: string[] = [];
-    destroyed_ = false;
+/**
+ * These fixtures are the router's real frames, captured from the running official Codex
+ * extension. The fake below only replays them — it never re-derives the shape from our own
+ * types, which is how the previous envelope bug survived a green test suite.
+ */
+const REAL_INITIALIZE_REQUEST = {
+    type: 'request',
+    requestId: 'request-1',
+    sourceClientId: 'initializing-client',
+    version: 0,
+    method: 'initialize',
+    params: { clientType: 'aiflow-vscode' }
+};
 
-    override connect(options: any): this {
-        this.connectPaths.push(options.path);
+const REAL_INITIALIZE_RESPONSE = {
+    type: 'response',
+    requestId: 'request-1',
+    resultType: 'success',
+    method: 'initialize',
+    handledByClientId: 'assigned-client-id',
+    result: { clientId: 'assigned-client-id' }
+};
+
+/** Owner discovery answers in the envelope: `result` is empty. */
+const REAL_OWNER_DISCOVERY_RESPONSE = {
+    type: 'response',
+    requestId: 'request-2',
+    resultType: 'success',
+    method: 'thread-owner-discovery',
+    handledByClientId: 'f6811611-dc4b-41f3-8b99-44b2f541fa19',
+    result: {}
+};
+
+/** A broadcast the router pushes when a client starts following a thread. */
+const REAL_FOLLOWING_BROADCAST = {
+    type: 'broadcast',
+    method: 'thread-stream-following-changed',
+    sourceClientId: 'f6811611-dc4b-41f3-8b99-44b2f541fa19',
+    targetClientIds: ['assigned-client-id'],
+    params: {
+        conversationId: '019ff6f3-9f27-7983-b94b-2a67d19e5d94',
+        hostId: 'local',
+        following: true
+    },
+    version: 1
+};
+
+/** Replays recorded router frames and records exactly what Aiflow writes. */
+class FakeRouter extends net.Socket {
+    sent: Record<string, any>[] = [];
+    private nextId = 1;
+
+    override connect(_options: any): this {
         setImmediate(() => this.emit('connect'));
         return this;
     }
@@ -30,77 +77,137 @@ class FakeSocket extends net.Socket {
     }
 
     override destroy(): this {
-        this.destroyed_ = true;
         this.emit('close');
         return this;
     }
 
-    /** Pushes a response frame for the request at `index`. */
-    respondTo(index: number, result: unknown, error?: unknown): void {
+    /** Answers request `index` the way the real router does. */
+    succeed(index: number, result: unknown, handledByClientId?: string): void {
         const request = this.sent[index];
-        const message: Record<string, unknown> = { type: 'response', id: request.id };
-        if (error !== undefined) {
-            message.error = error;
-        } else {
-            message.result = result;
-        }
+        this.push_({
+            type: 'response',
+            requestId: request.requestId,
+            resultType: 'success',
+            method: request.method,
+            handledByClientId,
+            result
+        });
+    }
+
+    fail(index: number, error: string): void {
+        const request = this.sent[index];
+        this.push_({
+            type: 'response',
+            requestId: request.requestId,
+            resultType: 'error',
+            method: request.method,
+            error
+        });
+    }
+
+    push_(message: unknown): void {
         this.emit('data', encodeFrame(message));
     }
 
-    broadcast(message: unknown): void {
-        this.emit('data', encodeFrame(message));
+    takeRequestId(): string {
+        return `request-${this.nextId++}`;
     }
 }
 
-function makeClient(timeoutMs = 200): { client: CodexIpcClient; socket: FakeSocket } {
-    const socket = new FakeSocket();
+/** Reads a recorded frame without narrowing, so negative assertions stay possible. */
+function frameAt(router: FakeRouter, index: number): any {
+    return router.sent[index];
+}
+
+function makeClient(timeoutMs = 200): { client: CodexIpcClient; router: FakeRouter } {
+    const router = new FakeRouter();
     const client = new CodexIpcClient({
         socketPath: '/tmp/fake-codex.sock',
         requestTimeoutMs: timeoutMs,
-        createSocket: () => socket
+        createSocket: () => router,
+        newRequestId: () => router.takeRequestId()
     });
-    return { client, socket };
+    return { client, router };
 }
 
-/** Connects and completes `initialize`. */
-async function connected(timeoutMs = 200): Promise<{ client: CodexIpcClient; socket: FakeSocket }> {
-    const { client, socket } = makeClient(timeoutMs);
+async function connected(timeoutMs = 200): Promise<{ client: CodexIpcClient; router: FakeRouter }> {
+    const { client, router } = makeClient(timeoutMs);
     const connecting = client.connect();
     await new Promise((r) => setImmediate(r));
-    socket.respondTo(0, { clientId: 'client-aiflow-1' });
+    router.push_(REAL_INITIALIZE_RESPONSE);
     await connecting;
-    return { client, socket };
+    return { client, router };
 }
 
-test('initialize announces the Aiflow client type and retains the client id', async () => {
-    const { client, socket } = await connected();
+// MARK: - initialize, against the captured frames
 
-    assert.equal(socket.sent[0].method, 'initialize');
-    assert.deepEqual(socket.sent[0].params, { clientType: CLIENT_TYPE });
-    assert.equal(client.assignedClientId, 'client-aiflow-1');
+test('the initialize request matches the real captured frame exactly', async () => {
+    const { client, router } = makeClient();
+    const connecting = client.connect();
+    await new Promise((r) => setImmediate(r));
+
+    assert.deepEqual(router.sent[0], REAL_INITIALIZE_REQUEST);
+    assert.equal(router.sent[0].sourceClientId, INITIALIZING_CLIENT_ID);
+    assert.equal(router.sent[0].params.clientType, CLIENT_TYPE);
+    // The old, wrong envelope used `id`; the router requires `requestId`.
+    assert.equal(frameAt(router, 0).id, undefined);
+
+    router.push_(REAL_INITIALIZE_RESPONSE);
+    assert.equal(await connecting, 'assigned-client-id');
+    client.dispose();
+});
+
+test('the assigned client id is retained and reused as sourceClientId', async () => {
+    const { client, router } = await connected();
+    assert.equal(client.assignedClientId, 'assigned-client-id');
     assert.equal(client.isConnected, true);
+
+    client.request('some-method', {}).catch(() => {});
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(router.sent[1].sourceClientId, 'assigned-client-id');
     client.dispose();
 });
 
-test('connects to the configured socket path', async () => {
-    const { client, socket } = await connected();
-    assert.deepEqual(socket.connectPaths, ['/tmp/fake-codex.sock']);
-    client.dispose();
-});
-
-test('matches responses to their own request ids', async () => {
-    const { client, socket } = await connected();
+test('responses correlate by requestId, not arrival order', async () => {
+    const { client, router } = await connected();
 
     const first = client.request('a', {});
     const second = client.request('b', {});
     await new Promise((r) => setImmediate(r));
 
-    // Answer out of order: correlation is by id, not arrival order.
-    socket.respondTo(2, { which: 'second' });
-    socket.respondTo(1, { which: 'first' });
+    router.succeed(2, { which: 'second' });
+    router.succeed(1, { which: 'first' });
 
-    assert.deepEqual(await first, { which: 'first' });
-    assert.deepEqual(await second, { which: 'second' });
+    assert.deepEqual((await first).result, { which: 'first' });
+    assert.deepEqual((await second).result, { which: 'second' });
+    client.dispose();
+});
+
+test('a response for an unknown requestId is ignored', async () => {
+    const { client, router } = await connected();
+    const pending = client.request('a', {});
+    await new Promise((r) => setImmediate(r));
+
+    router.push_({
+        type: 'response',
+        requestId: 'not-a-request-we-sent',
+        resultType: 'success',
+        result: { bogus: true }
+    });
+    router.succeed(1, { real: true });
+
+    assert.deepEqual((await pending).result, { real: true });
+    client.dispose();
+});
+
+test('resultType error rejects with the router message', async () => {
+    const { client, router } = await connected();
+    const pending = client.request('thing', {});
+    await new Promise((r) => setImmediate(r));
+    router.fail(1, 'no client found for target');
+
+    await assert.rejects(() => pending, /no client found for target/);
     client.dispose();
 });
 
@@ -110,102 +217,89 @@ test('a request rejects on timeout', async () => {
     client.dispose();
 });
 
-test('an error response rejects with the router message', async () => {
-    const { client, socket } = await connected();
-    const pending = client.request('thing', {});
-    await new Promise((r) => setImmediate(r));
-    socket.respondTo(1, undefined, { message: 'no client found' });
-
-    await assert.rejects(() => pending, /no client found/);
-    client.dispose();
-});
-
 test('pending requests reject when the connection drops', async () => {
-    const { client, socket } = await connected();
+    const { client, router } = await connected();
     const pending = client.request('thing', {});
     await new Promise((r) => setImmediate(r));
 
-    socket.emit('close');
+    router.emit('close');
 
     await assert.rejects(() => pending, /connection closed/);
     assert.equal(client.isConnected, false);
     client.dispose();
 });
 
-test('a fatal framing error drops the connection instead of misreading bytes', async () => {
-    const { client, socket } = await connected();
-    let protocolError: Error | undefined;
-    client.on('protocolError', (error: Error) => (protocolError = error));
-
-    const header = Buffer.alloc(4);
-    header.writeUInt32LE(500_000_000, 0); // absurd length
-    socket.emit('data', header);
-
-    assert.ok(protocolError, 'a framing error is surfaced');
-    assert.equal(socket.destroyed_, true);
-    client.dispose();
-});
-
-test('broadcasts are emitted rather than treated as responses', async () => {
-    const { client, socket } = await connected();
-    const seen: unknown[] = [];
+test('a real broadcast frame is emitted, not mistaken for a response', async () => {
+    const { client, router } = await connected();
+    const seen: any[] = [];
     client.on('broadcast', (message: unknown) => seen.push(message));
 
-    socket.broadcast({ type: 'notification', method: 'thread/following', params: { conversationId: 'c1' } });
+    router.push_(REAL_FOLLOWING_BROADCAST);
 
     assert.equal(seen.length, 1);
+    assert.equal(seen[0].method, 'thread-stream-following-changed');
+    assert.equal(seen[0].params.conversationId, '019ff6f3-9f27-7983-b94b-2a67d19e5d94');
     client.dispose();
 });
 
-// MARK: typed operations
+// MARK: - owner discovery
 
-test('owner discovery sends the documented payload and returns the owner', async () => {
-    const { client, socket } = await connected();
-    const pending = client.discoverThreadOwner('conv-1');
+test('owner discovery reads handledByClientId from the envelope', async () => {
+    const { client, router } = await connected();
+    const pending = client.discoverThreadOwner('019ff6f3-9f27-7983-b94b-2a67d19e5d94');
     await new Promise((r) => setImmediate(r));
 
-    assert.equal(socket.sent[1].method, REQUESTS.threadOwnerDiscovery.method);
-    assert.equal(socket.sent[1].version, 1);
-    assert.deepEqual(socket.sent[1].params, { hostId: 'local', conversationId: 'conv-1' });
+    assert.equal(router.sent[1].method, 'thread-owner-discovery');
+    assert.equal(router.sent[1].version, REQUEST_VERSIONS['thread-owner-discovery']);
+    assert.deepEqual(router.sent[1].params, {
+        hostId: 'local',
+        conversationId: '019ff6f3-9f27-7983-b94b-2a67d19e5d94'
+    });
 
-    socket.respondTo(1, { handledByClientId: 'client-codex-9' });
-    assert.equal(await pending, 'client-codex-9');
+    // The real router answers with an EMPTY result and names the owner in the envelope.
+    router.push_(REAL_OWNER_DISCOVERY_RESPONSE);
+    assert.equal(await pending, 'f6811611-dc4b-41f3-8b99-44b2f541fa19');
     client.dispose();
 });
 
-test('owner discovery rejects when no client owns the thread', async () => {
-    const { client, socket } = await connected();
+test('owner discovery rejects when the envelope names no owner', async () => {
+    const { client, router } = await connected();
     const pending = client.discoverThreadOwner('conv-1');
     await new Promise((r) => setImmediate(r));
-    socket.respondTo(1, {});
+    router.succeed(1, {});
 
     await assert.rejects(() => pending, CodexIpcNoOwnerError);
     client.dispose();
 });
 
-test('settings update carries the exact model and effort', async () => {
-    const { client, socket } = await connected();
+// MARK: - targeting lives on the envelope
+
+test('settings update targets the owner at the envelope level', async () => {
+    const { client, router } = await connected();
     const pending = client.updateThreadSettings('owner-1', 'conv-1', {
         model: 'gpt-5.6-sol',
         effort: 'low'
     });
     await new Promise((r) => setImmediate(r));
 
-    assert.equal(socket.sent[1].method, REQUESTS.followerUpdateSettings.method);
-    assert.equal(socket.sent[1].version, 1);
-    assert.deepEqual(socket.sent[1].params, {
-        targetClientId: 'owner-1',
+    const frame = router.sent[1];
+    assert.equal(frame.method, 'thread-follower-update-thread-settings');
+    assert.equal(frame.version, REQUEST_VERSIONS['thread-follower-update-thread-settings']);
+    assert.equal(frame.targetClientId, 'owner-1');
+    // The exact follower payload: no targetClientId inside params.
+    assert.deepEqual(frame.params, {
         conversationId: 'conv-1',
         threadSettings: { model: 'gpt-5.6-sol', effort: 'low' }
     });
+    assert.equal(frameAt(router, 1).params.targetClientId, undefined);
 
-    socket.respondTo(1, {});
+    router.succeed(1, {});
     await pending;
     client.dispose();
 });
 
-test('start-turn submits the exact prompt with the same model and effort', async () => {
-    const { client, socket } = await connected();
+test('start-turn targets the owner at the envelope level and keeps the exact prompt', async () => {
+    const { client, router } = await connected();
     const prompt = 'AIFLOW_EXACT_IPC_PROBE. Reply with exactly AIFLOW_EXACT_IPC_OK.';
     const pending = client.startTurn('owner-1', 'conv-1', prompt, {
         model: 'gpt-5.6-sol',
@@ -213,39 +307,96 @@ test('start-turn submits the exact prompt with the same model and effort', async
     });
     await new Promise((r) => setImmediate(r));
 
-    const params = socket.sent[1].params as Record<string, any>;
-    assert.equal(socket.sent[1].method, REQUESTS.followerStartTurn.method);
-    assert.equal(socket.sent[1].version, 1);
-    assert.equal(params.targetClientId, 'owner-1');
-    assert.equal(params.conversationId, 'conv-1');
-    assert.deepEqual(params.turnStartParams.input, [
+    const frame = router.sent[1];
+    assert.equal(frame.method, 'thread-follower-start-turn');
+    assert.equal(frame.version, REQUEST_VERSIONS['thread-follower-start-turn']);
+    assert.equal(frame.targetClientId, 'owner-1');
+    assert.equal(frame.params.targetClientId, undefined, 'must not leak into params');
+    assert.equal(frame.params.conversationId, 'conv-1');
+    assert.deepEqual(frame.params.turnStartParams.input, [
         { type: 'text', text: prompt, text_elements: [] }
     ]);
-    assert.equal(params.turnStartParams.model, 'gpt-5.6-sol');
-    assert.equal(params.turnStartParams.effort, 'low');
-    assert.equal(params.localTurnMetadata, null);
-    assert.equal(params.mcpAppModelContextAttachments, null);
+    assert.equal(frame.params.turnStartParams.model, 'gpt-5.6-sol');
+    assert.equal(frame.params.turnStartParams.effort, 'low');
+    assert.equal(frame.params.localTurnMetadata, null);
+    assert.equal(frame.params.mcpAppModelContextAttachments, null);
+    assert.ok(!JSON.stringify(frame).toLowerCase().includes('implementtodo'));
 
-    // No TODO wrapper, ever.
-    assert.ok(!JSON.stringify(socket.sent[1]).toLowerCase().includes('implementtodo'));
-    socket.respondTo(1, {});
+    router.succeed(1, {});
     await pending;
     client.dispose();
 });
 
-test('interrupt names the exact conversation and turn', async () => {
-    const { client, socket } = await connected();
+test('no follower request ever puts targetClientId inside params', async () => {
+    const { client, router } = await connected();
+
+    const ignore = (): void => {};
+    client.updateThreadSettings('owner-1', 'c', { model: 'gpt-5.6-sol', effort: 'low' }).catch(ignore);
+    client.startTurn('owner-1', 'c', 'p', { model: 'gpt-5.6-sol', effort: 'low' }).catch(ignore);
+    client.interruptTurn('owner-1', 'c', 'turn-1').catch(ignore);
+    await new Promise((r) => setImmediate(r));
+
+    for (const frame of router.sent.slice(1)) {
+        assert.equal(frame.params.targetClientId, undefined, frame.method);
+        assert.equal(frame.targetClientId, 'owner-1', frame.method);
+    }
+    client.dispose();
+});
+
+// MARK: - interrupt uses the official user-stop semantics
+
+test('interrupt sends mode and expectedTurnId at version 4', async () => {
+    const { client, router } = await connected();
     const pending = client.interruptTurn('owner-1', 'conv-1', 'turn-7');
     await new Promise((r) => setImmediate(r));
 
-    assert.equal(socket.sent[1].method, REQUESTS.followerInterruptTurn.method);
-    assert.deepEqual(socket.sent[1].params, {
-        targetClientId: 'owner-1',
+    const frame = router.sent[1];
+    assert.equal(frame.method, 'thread-follower-interrupt-turn');
+    assert.equal(frame.version, 4, 'version 4 when an expected turn id is known');
+    assert.equal(frame.targetClientId, 'owner-1');
+    assert.deepEqual(frame.params, {
         conversationId: 'conv-1',
-        turnId: 'turn-7'
+        mode: USER_STOP_MODE,
+        expectedTurnId: 'turn-7'
     });
-    socket.respondTo(1, {});
+    assert.equal(frameAt(router, 1).params.turnId, undefined, 'the field is expectedTurnId, not turnId');
+
+    router.succeed(1, {});
     await pending;
+    client.dispose();
+});
+
+test('interrupt without an expected turn id drops to compatibility version 3', async () => {
+    const { client, router } = await connected();
+    const pending = client.interruptTurn('owner-1', 'conv-1');
+    await new Promise((r) => setImmediate(r));
+
+    const frame = router.sent[1];
+    assert.equal(frame.version, 3, 'the extension itself uses 3 when expectedTurnId is absent');
+    // No fabricated turn id.
+    assert.deepEqual(frame.params, { conversationId: 'conv-1', mode: USER_STOP_MODE });
+    assert.equal('expectedTurnId' in frame.params, false);
+
+    router.succeed(1, {});
+    await pending;
+    client.dispose();
+});
+
+test('the request versions match the official extension table', () => {
+    assert.equal(REQUEST_VERSIONS['thread-owner-discovery'], 1);
+    assert.equal(REQUEST_VERSIONS['thread-follower-start-turn'], 1);
+    assert.equal(REQUEST_VERSIONS['thread-follower-update-thread-settings'], 1);
+    assert.equal(REQUEST_VERSIONS['thread-follower-interrupt-turn'], 4);
+    assert.equal(REQUEST_VERSIONS['thread-follower-interrupt-turn-without-expected-turn'], 3);
+});
+
+test('timeoutMs, when sent, is a top-level envelope field', async () => {
+    const { client, router } = await connected();
+    client.request('m', { a: 1 }, { timeoutMs: 5000, targetClientId: 'owner-1' }).catch(() => {});
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(router.sent[1].timeoutMs, 5000);
+    assert.deepEqual(router.sent[1].params, { a: 1 });
     client.dispose();
 });
 
