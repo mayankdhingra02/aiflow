@@ -40,12 +40,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const codex = new OfficialCodexHost();
     context.subscriptions.push({ dispose: () => codex.dispose() });
+    const warnedCompatibilityVersions = new Set<string>();
 
     const announceOfficialWorker = (): void => {
         const enabled = vscode.workspace
             .getConfiguration()
             .get<boolean>('aiflow.officialWorker.enabled', false);
-        client.workerAvailable(enabled && codex.isExtensionInstalled);
+        const status = codex.status();
+        const ready = enabled && status.extensionInstalled && status.extensionVersionSupported;
+        client.workerAvailable(ready);
+
+        if (enabled && status.extensionInstalled && !status.extensionVersionSupported) {
+            const warningKey = status.extensionVersion ?? '<unknown>';
+            if (!warnedCompatibilityVersions.has(warningKey)) {
+                warnedCompatibilityVersions.add(warningKey);
+                void vscode.window.showWarningMessage(
+                    status.detail ?? 'Aiflow official worker is unavailable for this Codex extension version.'
+                );
+            }
+        }
     };
 
     /** The run the official worker is currently executing, if any. */

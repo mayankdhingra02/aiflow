@@ -55,9 +55,11 @@ newer request.
 > delivery, Sol/Low settings, normal completion, real-turn cancellation, and conversation reuse
 > across runs.
 >
-> **Version compatibility is not universal.** `26.814.41407` is the tested version.
-> `26.818.21641` bootstraps but rejects `thread-follower-start-turn`; that delta is deferred to
-> a follow-up. Treat other versions as unverified — this is why the worker stays opt-in.
+> **Version compatibility is exact and allowlisted before dispatch.** `26.814.41407` is the
+> only currently accepted version. Unsupported or unknown versions make the official worker
+> unavailable before IPC or synthetic bootstrap, so the macOS app can select the legacy worker
+> without spending a bootstrap turn or model tokens. `26.818.21641` was observed incompatible
+> and is currently blocked; other versions are blocked as well.
 
 Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
 it if needed; it never bundles or redistributes it.
