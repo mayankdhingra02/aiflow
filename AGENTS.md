@@ -4,7 +4,9 @@
 
 Aiflow is a local orchestration layer. It does not replace the planner or implementation model.
 It collects trusted local facts, validates model-produced packets, routes work to registered
-repositories, launches Codex with bounded permissions, and records deterministic evidence.
+repositories, launches legacy workers with Aiflow-controlled bounded permissions, drives the
+official worker's official Codex-owned session without controlling its selected permission
+policy, and records deterministic evidence.
 
 The current loop is:
 
@@ -52,7 +54,9 @@ extension while the macOS app remains the orchestration/source-of-run surface.
   (packet workflow).
 - Never log clipboard contents that are not recognized AIFLOW packets.
 - Never read the clipboard continuously without an explicitly armed task or user action.
-- Never use `danger-full-access`, `--yolo`, `--approve-for-me`, or automatic merging.
+- Aiflow must never request, set, or broaden execution to `danger-full-access`, `--yolo`,
+  `--approve-for-me`, or automatic merging. On the official-worker path, Aiflow sends no such
+  override but cannot guarantee which policy the official extension has already selected.
 - Sanitize Git remote URLs before storing or placing them in prompts.
 
 ### Codex App Server invariants (menu-bar surface)
@@ -107,8 +111,11 @@ Never run both for one Aiflow run. Fallback must be visible, never silent ambigu
 
 ### VS Code companion invariants
 
-- The companion must never launch a second Codex process or session.
-- It mirrors and controls the single Aiflow-owned session only.
+- The companion never launches a Codex process of its own.
+- On the official path, it may bootstrap or reuse exactly one official Codex-owned conversation
+  for the workspace/run.
+- On the legacy path, it mirrors and controls the Aiflow-owned Codex App Server run.
+- It never creates duplicate execution for one Aiflow run.
 - The bridge listens on `127.0.0.1` only — never `0.0.0.0` or a LAN interface.
 - Loopback is not an authorization boundary. A connection must authenticate with the local
   bridge token before Aiflow sends any run state or honours any command; an unauthenticated

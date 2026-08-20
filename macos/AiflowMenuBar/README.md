@@ -29,14 +29,14 @@ Removing a project only forgets it — the repository on disk is never touched.
 
 The details below apply when Aiflow uses its legacy App Server worker. The opt-in official
 VS Code worker inherits the official Codex extension's current policy; its menu-bar label says
-`Approval: Codex policy` rather than implying that these native sheets control that worker.
+`Approval: Codex policy` rather than implying that this inline approval UI controls that worker.
 
 Three separate things, none of them automatic:
 
-1. **Starting a run** — clicking a project opens a confirmation sheet. There is no
+1. **Starting a run** — clicking a project opens a confirmation panel. There is no
    "don't ask again".
-2. **Codex permission requests** — surfaced as a native Allow Once / Deny sheet. The
-   decision applies to that one request only, and the run stays blocked on that exact
+2. **Codex permission requests** — surfaced as native Allow Once / Deny controls in the inline
+   panel. The decision applies to that one request only, and the run stays blocked on that exact
    request id until Codex confirms it resolved it.
 3. **Codex questions** — a request may carry several questions; each is shown with its
    options or a text field, and every one must be answered before the reply is sent.
