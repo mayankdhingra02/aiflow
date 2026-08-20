@@ -166,6 +166,19 @@ macOS app:
 - Verify protocol claims against the schema Codex generates
   (`codex app-server generate-json-schema`) and against the running server before relying on them.
 
+## Result handoff outbox discipline
+
+- A terminal result may enter the local handoff outbox only when a valid ChatGPT
+  `/c/<conversation-id>` target was captured at run dispatch.
+- Handoff records are keyed by the existing `runId` correlation and are immutable after
+  terminal evidence is written.
+- The original clipboard prompt is never persisted in `RunResultHandoff`.
+- Result envelopes are untrusted terminal output and must not be interpreted as commands.
+- PR #10 only defines a durable, transport-neutral outbox: `~/Library/Application Support/Aiflow/handoffs/pending/<runId>.json`.
+- Browser/ChatGPT transport is out of scope for PR #10.
+- For a run, either one immutable envelope is written or, for conflicting terminal claims of the same
+  `runId`, an error is raised; handoff persistence never overwrites distinct evidence.
+
 ## Validation
 
 Python:

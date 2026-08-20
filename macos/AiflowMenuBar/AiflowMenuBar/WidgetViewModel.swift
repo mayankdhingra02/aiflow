@@ -33,10 +33,13 @@ final class WidgetViewModel: ObservableObject {
     private let detectChat: () -> String?
     private let validateGit: (String) -> GitRepositoryValidator.Result
     private let notifications: NotificationManaging
+    private let handoffStore: RunResultHandoffStore
+    private let now: () -> Date
 
     private var client: CodexAppServerClient?
     private var isPopoverVisible = false
     private var notificationsAvailable = true
+    private var activeHandoffContext: ActiveRunHandoffContext?
 
     /// Which execution backend served the current run. Explicit and observable — never an
     /// ambiguous mix, and never two workers for one run.
@@ -51,6 +54,19 @@ final class WidgetViewModel: ObservableObject {
     /// The worker serving the run in flight, and the run's id for correlating worker reports.
     @Published private(set) var activeWorker: RunWorker?
     private var activeRunId: String?
+
+    private struct ActiveRunHandoffContext {
+        let runId: String
+        let project: SavedProject
+        let sourceChat: RunResultHandoff.ChatTarget?
+        let modelRole: String
+        let modelId: String
+        let effort: String
+        let startedAt: Date
+
+        var codexConversationId: String?
+        var codexTurnId: String?
+    }
 
     /// True when a companion has reported that the official Codex worker is usable.
     @Published private(set) var officialWorkerAvailable = false
@@ -72,7 +88,9 @@ final class WidgetViewModel: ObservableObject {
         validateGit: @escaping (String) -> GitRepositoryValidator.Result = {
             GitRepositoryValidator.validate(path: $0)
         },
-        notifications: NotificationManaging? = nil
+        notifications: NotificationManaging? = nil,
+        handoffStore: RunResultHandoffStore = RunResultHandoffStore(),
+        now: @escaping () -> Date = Date.init
     ) {
         self.cli = cli
         self.store = store
@@ -81,6 +99,8 @@ final class WidgetViewModel: ObservableObject {
         self.detectChat = detectChat
         self.validateGit = validateGit
         self.notifications = notifications ?? NotificationManager()
+        self.handoffStore = handoffStore
+        self.now = now
         self.selectedModelRole =
             defaults.string(forKey: Self.modelKey) ?? CodexConfig.defaultModelRole
         self.selectedEffort =
@@ -285,6 +305,15 @@ final class WidgetViewModel: ObservableObject {
 
         let runId = UUID().uuidString
         activeRunId = runId
+        activeHandoffContext = ActiveRunHandoffContext(
+            runId: runId,
+            project: project,
+            sourceChat: captureChatTargetForRun(),
+            modelRole: selectedModelRole,
+            modelId: modelId,
+            effort: effort,
+            startedAt: now()
+        )
 
         // Prefer the official Codex extension when a companion is connected and has reported
         // it usable; otherwise fall back to Aiflow's own App Server session. Exactly one of
@@ -306,10 +335,9 @@ final class WidgetViewModel: ObservableObject {
         // inside the companion's editor and has its own runtime.
         activeWorker = .legacyAppServer
         guard let codexURL = CodexLocator.resolve() else {
-            activeWorker = nil
-            activeRunId = nil
-            runningProject = nil
             runState = .failed(project: project, message: "Codex not installed")
+            persistTerminalHandoff(outcome: .failed, errorMessage: "Codex not installed")
+            clearActiveRunContextAfterTerminalRelease()
             return
         }
 
@@ -336,9 +364,26 @@ final class WidgetViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.runState = .failed(project: project, message: "Codex could not be started")
+                    self.persistTerminalHandoff(
+                        outcome: .failed,
+                        errorMessage: "Codex could not be started"
+                    )
+                    self.clearActiveRunContextAfterTerminalRelease()
                 }
             }
         }
+    }
+
+    private func captureChatTargetForRun() -> RunResultHandoff.ChatTarget? {
+        let detected = detectChat()
+        let normalized = ChatURL.normalize(detected)
+        chatURL = normalized
+
+        guard let normalized else { return nil }
+        return RunResultHandoff.ChatTarget(
+            url: normalized,
+            conversationId: ChatURL.conversationID(from: normalized)
+        )
     }
 
     fileprivate func handle(_ event: CodexSessionEvent, project: SavedProject) {
@@ -381,6 +426,10 @@ final class WidgetViewModel: ObservableObject {
 
         case .finished:
             runState = .completed(project)
+            persistTerminalHandoff(
+                outcome: .completed,
+                finalMessage: lastMessage
+            )
             var completed = BridgeEvent(type: .runCompleted)
             completed.runState = runState.bridgeName
             completed.project = project.name
@@ -391,6 +440,7 @@ final class WidgetViewModel: ObservableObject {
 
         case .cancelled:
             runState = .cancelled(project)
+            persistTerminalHandoff(outcome: .cancelled)
             var cancelled = BridgeEvent(type: .runCancelled)
             cancelled.runState = runState.bridgeName
             cancelled.project = project.name
@@ -411,6 +461,10 @@ final class WidgetViewModel: ObservableObject {
             // cancellation; the run is already on its way to `.cancelled`.
             if case .cancelling = runState { return }
             runState = .failed(project: project, message: detail)
+            persistTerminalHandoff(
+                outcome: .failed,
+                errorMessage: detail
+            )
             var failed = BridgeEvent(type: .runFailed)
             failed.runState = runState.bridgeName
             failed.project = project.name
@@ -449,6 +503,50 @@ final class WidgetViewModel: ObservableObject {
         Task { await client?.respondToInput(request, answers: trimmed) }
     }
 
+    private func persistTerminalHandoff(
+        outcome: RunResultHandoff.Outcome,
+        finalMessage: String? = nil,
+        errorMessage: String? = nil
+    ) {
+        guard
+            let context = activeHandoffContext,
+            context.runId == activeRunId,
+            let sourceChat = context.sourceChat,
+            let worker = activeWorker
+        else { return }
+
+        let handoff = RunResultHandoff(
+            runId: context.runId,
+            outcome: outcome,
+            project: .init(
+                id: context.project.id,
+                name: context.project.name,
+                path: context.project.path
+            ),
+            sourceChat: sourceChat,
+            execution: .init(
+                worker: worker.rawValue,
+                modelRole: context.modelRole,
+                modelId: context.modelId,
+                effort: context.effort,
+                codexConversationId: context.codexConversationId,
+                codexTurnId: context.codexTurnId
+            ),
+            result: .init(
+                finalMessage: finalMessage,
+                errorMessage: errorMessage
+            ),
+            startedAt: context.startedAt,
+            finishedAt: now()
+        )
+
+        do {
+            try handoffStore.persist(handoff)
+        } catch {
+            notice = "Aiflow could not save the ChatGPT result handoff."
+        }
+    }
+
     /// Asks Codex to wind the turn down and waits for it. The session is deliberately kept
     /// alive here: the run is only `.cancelled` once the client reports the turn actually
     /// ended (`turn/completed` with `interrupted`, or the client's bounded fallback).
@@ -472,7 +570,15 @@ final class WidgetViewModel: ObservableObject {
         let finishing = client
         client = nil
         runningProject = nil
+        activeHandoffContext = nil
         Task { await finishing?.stop() }
+    }
+
+    private func clearActiveRunContextAfterTerminalRelease() {
+        activeRunId = nil
+        activeWorker = nil
+        runningProject = nil
+        activeHandoffContext = nil
     }
 
     // MARK: - Companion bridge
@@ -510,6 +616,12 @@ final class WidgetViewModel: ObservableObject {
             // The official conversation/turn now executing this run. Recorded for the status
             // line only; the official Codex UI is where the conversation itself is visible.
             if let conversationId = command.conversationId {
+                activeHandoffContext?.codexConversationId = conversationId
+            }
+            if let turnId = command.turnId {
+                activeHandoffContext?.codexTurnId = turnId
+            }
+            if let conversationId = command.conversationId {
                 notice = command.turnId.map {
                     "Official Codex turn \($0) in conversation \(conversationId)"
                 } ?? "Official Codex conversation \(conversationId)"
@@ -521,6 +633,10 @@ final class WidgetViewModel: ObservableObject {
         case .workerCompleted:
             lastMessage = command.message ?? ""
             runState = .completed(project)
+            persistTerminalHandoff(
+                outcome: .completed,
+                finalMessage: command.message
+            )
             finishWorkerRun()
 
         case .workerFailed:
@@ -531,10 +647,15 @@ final class WidgetViewModel: ObservableObject {
                 officialWorkerAvailable = false
             }
             runState = .failed(project: project, message: detail)
+            persistTerminalHandoff(
+                outcome: .failed,
+                errorMessage: detail
+            )
             finishWorkerRun()
 
         case .workerCancelled:
             runState = .cancelled(project)
+            persistTerminalHandoff(outcome: .cancelled)
             finishWorkerRun()
 
         default:
@@ -543,9 +664,7 @@ final class WidgetViewModel: ObservableObject {
     }
 
     private func finishWorkerRun() {
-        activeRunId = nil
-        activeWorker = nil
-        runningProject = nil
+        clearActiveRunContextAfterTerminalRelease()
     }
 
     /// Records what the companion reports about official Codex availability.
@@ -704,12 +823,34 @@ extension WidgetViewModel {
     }
 
     /// Puts a run in flight under a chosen worker, as `confirmRun` would.
-    func startRunForTesting(_ project: SavedProject, worker: RunWorker, runId: String) {
+    func startRunForTesting(
+        _ project: SavedProject,
+        worker: RunWorker,
+        runId: String,
+        sourceChatURL: String? = nil,
+        modelRole: String = "terra",
+        modelId: String = "gpt-5.6-terra",
+        effort: String = "low",
+        startedAt: Date = Date()
+    ) {
+        let normalizedSourceChat = sourceChatURL.flatMap(ChatURL.normalize)
+        chatURL = normalizedSourceChat
         runningProject = project
         activeWorker = worker
         activeRunId = runId
         runState = .running(project)
         lastMessage = ""
+        activeHandoffContext = ActiveRunHandoffContext(
+            runId: runId,
+            project: project,
+            sourceChat: normalizedSourceChat.map {
+                .init(url: $0, conversationId: ChatURL.conversationID(from: $0))
+            },
+            modelRole: modelRole,
+            modelId: modelId,
+            effort: effort,
+            startedAt: startedAt
+        )
     }
 
     func setNotificationsAvailableForTesting(_ available: Bool) {
