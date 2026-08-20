@@ -9,8 +9,9 @@ Two roles, over one authenticated local bridge:
    and controls that run.
 
 The companion never starts a Codex process, never opens a second session, and never modifies
-the official extension. It also never uses `chatgpt.implementTodo` or any UI automation — the
-prompt is submitted through Codex's own local client-coordination IPC as a *follower*.
+the official extension. It uses `chatgpt.implementTodo` only once with a synthetic, Aiflow-owned
+temporary file to bootstrap an empty official thread; the user's prompt is submitted afterwards
+through Codex's local client-coordination IPC as a *follower*.
 
 ```
 Aiflow menu-bar app  ──(127.0.0.1:47321, newline-delimited JSON)──  VS Code companion
@@ -48,9 +49,9 @@ newer request.
 
 ## Official Codex worker
 
-> **Status: experimental, off by default.** Enable with `aiflow.officialWorker.enabled`.
-> Creating a *fresh* official Codex conversation has not been proven end to end, so Aiflow
-> keeps using its own Codex worker until it is. See "Known gaps" below.
+> **Status: opt-in, off by default.** Enable with `aiflow.officialWorker.enabled`.
+> Low-level fresh-thread bootstrap and follower execution are proven; final app-level acceptance
+> is still pending.
 
 Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
 it if needed; it never bundles or redistributes it.
@@ -58,11 +59,19 @@ it if needed; it never bundles or redistributes it.
 For each run the companion:
 
 1. joins the official extension's local IPC router as an additional client,
-2. opens a **new** Codex panel and correlates only a conversation that appears afterwards —
-   an already-open conversation of yours is never used,
-3. applies the requested model and reasoning effort and **requires that to succeed**,
-4. submits the exact Aiflow prompt verbatim, then
-5. watches that one conversation's session log for that one turn's completion.
+2. snapshots session-file identities, then uses one synthetic `implementTodo` turn with an
+   Aiflow-owned temporary file and unique nonce to mint a **new** Codex conversation,
+3. correlates only a new or changed session containing that nonce — an already-open conversation
+   is never used,
+4. verifies the bootstrap turn completed and recorded the requested workspace,
+5. applies the requested model and reasoning effort and **requires that to succeed**,
+6. submits the exact Aiflow prompt verbatim through follower IPC, then
+7. watches that one conversation's session log for that one turn's completion.
+
+The bootstrap TODO wrapper exists only on the synthetic first turn. The user's prompt never
+reaches `chatgpt.implementTodo`. Bootstrap is intentionally performed once for the newly-created
+conversation; future turns should reuse its conversation id. The current companion retains the
+id for the active worker/run lifetime and does not yet add cross-run persistence.
 
 Model/effort translation lives in one module (`src/codexIpc/models.ts`); nothing else
 hard-codes a Codex model id.
@@ -92,10 +101,12 @@ update-thread-settings 1, interrupt-turn 4 — dropping to 3 when no `expectedTu
 exactly as the extension's own version function does. Cancellation sends
 `{ conversationId, mode: "user-stop", expectedTurnId }`.
 
-### Known gaps
+### Bootstrap note
 
-**Fresh-thread creation is currently not possible from a follower client.** Measured against
-`openai.chatgpt@26.814.41407`, with the probe running in the same extension host:
+An empty `chatgpt.newCodexPanel` or `chatgpt.newChat` does not announce a routable conversation,
+and the follower router exposes no explicit thread-creation request. The companion therefore
+uses the narrow synthetic bootstrap above. It does not automate the UI and does not send the
+real Aiflow prompt through `implementTodo`.
 
 | Route | Result |
 | --- | --- |
@@ -104,16 +115,10 @@ exactly as the extension's own version function does. Cancellation sends
 | `thread-stream-following-status-requested` | `resultType: error`, `no-client-found` |
 | router method table | contains **no** thread-creation request; every `thread-follower-*` op addresses an existing `conversationId` |
 
-No provisional `client-new-thread:` id reaches the router either. A real conversation appears
-to exist only once a human submits the first message in the panel — which we will not automate.
-
-Consequently the official worker stays **off by default**, the resolver fails with a typed
-error rather than borrowing one of your existing conversations, and the legacy Aiflow worker
-serves runs. Driving an *existing* conversation is fully implemented and would work; it is
-deliberately not wired to production because Aiflow must not guess which of your conversations
-to use.
-
-**No end-to-end acceptance run has passed.** See `ACCEPTANCE.md`.
+The low-level bootstrap and exact follower turn have been exercised against the official
+extension. The official worker remains **off by default** until the complete menu-bar app →
+companion acceptance is reviewed. The legacy Aiflow worker remains available as the explicit
+fallback.
 
 ### Fallback
 
@@ -123,11 +128,12 @@ The fallback is explicit — the macOS app records which worker served each run.
 
 ## Troubleshooting
 
-- **"official Codex is unavailable"** — install/enable `openai.chatgpt`, open a Codex panel
-  once, then retry. Aiflow reads the router socket at `~/.codex/ipc/ipc.sock`
+- **"official Codex is unavailable"** — install/enable `openai.chatgpt`, then retry. Aiflow
+  reads the router socket at `~/.codex/ipc/ipc.sock`
   (override with `CODEX_IPC_SOCKET`).
-- **The run never starts** — the official extension must be able to create a new panel;
-  check that `chatgpt.newCodexPanel` works from the command palette.
+- **The run never starts** — check that the official extension is active and that its session
+  directory is writable. The companion must be able to create and remove its temporary bootstrap
+  file under the OS temp directory.
 - **Completion never arrives** — sessions are read from `~/.codex/sessions`
   (override with `CODEX_HOME`).
 

@@ -32,9 +32,15 @@ Select model **Sol** and thinking **Low**, then click the project button and con
 Check:
 
 - [ ] A **new** Codex conversation opens in the official Codex UI (not one you already had).
+- [ ] The companion used a nonce-correlated, Aiflow-owned temp file under the OS temp directory
+      for its synthetic bootstrap, then removed it.
 - [ ] It shows that exact prompt as the user message, character for character.
 - [ ] There is **no** TODO wrapper, and no text Aiflow added around your prompt.
 - [ ] No second Codex panel or process appears.
+
+The empty `chatgpt.newCodexPanel` command is not used for correlation: it does not create a
+routable conversation by itself. `chatgpt.implementTodo` is used only for the synthetic first
+turn; the real prompt is sent later with follower IPC.
 
 ## 5–6. Model and effort corroborated by session metadata
 
@@ -59,7 +65,8 @@ EOF
 Check:
 
 - [ ] Requested model is visible in the official UI's model selector for that thread.
-- [ ] `turn_context.cwd` is `/tmp/aiflow-acceptance` (7 — Codex ran in the requested repo).
+- [ ] `turn_context.cwd` is `/tmp/aiflow-acceptance` (7 — Codex ran in the requested repo;
+      canonicalize macOS `/tmp` and `/private/tmp` spellings).
 - [ ] `approval_policy` is `on-request`, `approvals_reviewer` is `user`,
       `sandbox` is `workspace-write` — **not** `danger-full-access`.
 
@@ -85,6 +92,7 @@ Check:
 - [ ] Any other Codex conversation you have open is untouched.
 - [ ] Aiflow shows the run as cancelled.
 - [ ] Cancelling again does nothing (idempotent).
+- [ ] Cancellation used the exact `conversationId` and `turnId` reported for this run.
 
 ## 10. Approvals stay user-mediated
 

@@ -58,13 +58,14 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 200;
 
 /**
- * Opens a new official Codex panel and returns the conversation id it created.
+ * Legacy panel-only resolver. Production uses `bootstrapFreshThread` instead because a blank
+ * panel does not create a routable conversation.
  *
  * Correlation rule: we start listening first, record every conversation id already mentioned
  * on the router, then ask for a new panel. Only an id we had not seen before is eligible, so a
  * user's existing threads can never be selected.
  *
- * KNOWN LIMITATION, measured against the installed extension (26.814.41407): opening a panel
+ * KNOWN LIMITATION, measured against the installed extension: opening a panel
  * announces no conversation at all. `chatgpt.newCodexPanel` and `chatgpt.newChat` both emit
  * only `client-status-changed` with no id, no provisional `client-new-thread:` id reaches the
  * router, and the router's method table contains no thread-creation request — every
@@ -72,10 +73,8 @@ const DEFAULT_POLL_MS = 200;
  * conversation appears to come into being only when a human submits the first message in the
  * panel.
  *
- * So this resolver currently always times out, by design: failing is correct, because the
- * alternative would be dispatching an Aiflow run into one of the user's unrelated
- * conversations. It is kept (rather than deleted) so the moment the extension does announce a
- * new thread, the correlation is already right.
+ * This resolver remains for compatibility and focused tests. It is not wired into the worker;
+ * the production path uses a nonce-correlated synthetic bootstrap instead.
  */
 export async function createFreshThread(
     deps: FreshThreadDeps,

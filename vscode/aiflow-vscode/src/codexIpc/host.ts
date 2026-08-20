@@ -1,13 +1,9 @@
 import * as vscode from 'vscode';
 import { CodexIpcClient } from './client';
 import { OfficialCodexWorker, WorkerError, WorkerRunRequest } from './worker';
-import { TurnResult } from './sessionWatcher';
-import {
-    NEW_PANEL_COMMAND,
-    OFFICIAL_EXTENSION_ID,
-    ThreadResolutionError,
-    createFreshThread
-} from './threadResolver';
+import { defaultSessionsRoot, TurnResult } from './sessionWatcher';
+import { OFFICIAL_EXTENSION_ID } from './threadResolver';
+import { bootstrapFreshThread, productionBootstrapDeps } from './bootstrapper';
 
 /**
  * Glue between VS Code and the official Codex worker.
@@ -70,38 +66,31 @@ export class OfficialCodexHost {
             this.ipc = ipc;
             this.worker = new OfficialCodexWorker({
                 ipc,
-                resolveConversation: (request) => this.resolveConversation(ipc, request)
+                resolveConversation: (request) => this.resolveConversation(request)
             });
             this.lastDetail = undefined;
         }
     }
 
     /**
-     * Opens a fresh official Codex panel for this run and returns its conversation id.
-     *
-     * A run is never dispatched into a conversation the user already had open — only one that
-     * appears after we asked for a new panel.
+     * Mints one fresh official conversation with a synthetic first turn. The real Aiflow prompt
+     * is intentionally not an argument to this method; it is sent later through follower IPC.
      */
     private async resolveConversation(
-        ipc: CodexIpcClient,
-        _request: WorkerRunRequest
+        request: WorkerRunRequest
     ): Promise<string> {
         try {
-            return await createFreshThread({
-                onBroadcast: (listener) => {
-                    const handler = (message: unknown): void => listener(message);
-                    ipc.on('broadcast', handler);
-                    return () => ipc.off('broadcast', handler);
-                },
-                openNewPanel: async () => {
-                    await vscode.commands.executeCommand(NEW_PANEL_COMMAND);
-                }
-            });
+            const result = await bootstrapFreshThread(
+                request.workspacePath,
+                productionBootstrapDeps(
+                    async (command, argument) =>
+                        await vscode.commands.executeCommand(command, argument),
+                    defaultSessionsRoot()
+                )
+            );
+            return result.conversationId;
         } catch (error) {
-            const detail =
-                error instanceof ThreadResolutionError
-                    ? error.message
-                    : 'could not create an official Codex conversation';
+            const detail = error instanceof Error ? error.message : 'could not bootstrap a conversation';
             throw new WorkerError('thread_unavailable', detail);
         }
     }

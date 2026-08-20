@@ -101,7 +101,7 @@
         "aiflow.officialWorker.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Execute Aiflow runs through the official Codex extension. EXPERIMENTAL and off by default: creating a fresh official Codex conversation has not yet been proven end to end, so Aiflow uses its own Codex worker instead."
+          "description": "Execute Aiflow runs through the official Codex extension. Opt-in and off by default pending final app-level acceptance; low-level fresh-thread bootstrap is proven."
         }
       }
     }

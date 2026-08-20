@@ -124,9 +124,9 @@ export function activate(context: vscode.ExtensionContext): void {
         // Tell the app whether this companion can act as the official Codex worker, so it
         // knows which backend to dispatch to. Presence of the extension is what is announced;
         // an unreachable IPC router still fails the individual run with a typed error.
-        // The official worker is opt-in while fresh-thread creation is unproven: announcing
-        // it unavailable keeps the macOS app on its own worker rather than dispatching into a
-        // path that cannot yet deterministically create a conversation.
+        // The official worker remains opt-in pending final app-level acceptance. When enabled,
+        // the host creates a fresh thread through the synthetic bootstrapper and never selects
+        // an arbitrary conversation already open in the user's UI.
         const officialEnabled = vscode.workspace
             .getConfiguration()
             .get<boolean>('aiflow.officialWorker.enabled', false);

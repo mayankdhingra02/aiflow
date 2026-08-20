@@ -133,6 +133,32 @@ test('the exact prompt text is submitted unchanged', async () => {
     assert.equal(start?.args[2], REQUEST.prompt);
 });
 
+test('fresh-thread bootstrap resolves before owner discovery and runs once per worker turn', async () => {
+    const ipc = new FakeIpc();
+    let bootstrapCalls = 0;
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async (request) => {
+            bootstrapCalls += 1;
+            assert.equal(request.prompt, REQUEST.prompt);
+            ipc.calls.push({ op: 'bootstrapFreshThread', args: [request.workspacePath] });
+            return CONV;
+        },
+        findSession: () => '/fake/session.jsonl',
+        createTail: () => scriptedTail([[], [started('turn-1')], [complete('turn-1', 'ok')]]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
+
+    await worker.run(REQUEST);
+
+    assert.equal(bootstrapCalls, 1);
+    const ops = ipc.calls.map((call) => call.op);
+    assert.ok(ops.indexOf('bootstrapFreshThread') < ops.indexOf('discoverThreadOwner'));
+    assert.ok(ops.indexOf('discoverThreadOwner') < ops.indexOf('updateThreadSettings'));
+    assert.ok(ops.indexOf('updateThreadSettings') < ops.indexOf('startTurn'));
+});
+
 test('a rejected settings update fails closed and never starts a turn', async () => {
     const ipc = new FakeIpc();
     ipc.failSettings = true;
