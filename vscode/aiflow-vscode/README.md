@@ -151,15 +151,20 @@ real Aiflow prompt through `implementTodo`.
 | router method table | contains **no** thread-creation request; every `thread-follower-*` op addresses an existing `conversationId` |
 
 The low-level bootstrap and exact follower turn have been exercised against the official
-extension. The official worker remains **off by default** until the complete menu-bar app →
-companion acceptance is reviewed. The legacy Aiflow worker remains available as the explicit
-fallback.
+extension, and complete menu-bar app → companion acceptance has passed against the tested
+version. The official worker remains **off by default** because compatibility is version-specific
+and the path inherits the official Codex extension/conversation's permission policy rather than
+enforcing one. The legacy Aiflow worker remains available as the explicit fallback.
 
 ### Fallback
 
-If the official extension is missing, its IPC is unreachable, or a fresh conversation cannot be
-correlated, the worker fails with a typed error and Aiflow falls back to running Codex itself.
-The fallback is explicit — the macOS app records which worker served each run.
+Before official dispatch, if no usable/designated official worker is available, `confirmRun()`
+selects the legacy App Server worker. If an official run has already been dispatched, an official
+worker failure remains visible and Aiflow does **not** silently replay the prompt through legacy;
+this prevents duplicate execution. `extension_unavailable` and `ipc_unavailable` clear official
+worker availability so a subsequent run can choose legacy. Other official errors, including
+thread, bootstrap, and start failures, do not automatically rerun through legacy. The selected
+worker is explicit and observable in the macOS app.
 
 ## Troubleshooting
 

@@ -88,7 +88,8 @@ only a convenience — every project button works without it.
 
 The app listens on `127.0.0.1:47321` (loopback only) from launch, speaking newline-delimited
 JSON to the optional VS Code companion in `vscode/aiflow-vscode/`. The companion is a
-viewer/controller for *this* run — it never starts Codex and never opens a second session.
+viewer/controller for legacy runs and the bounded official-worker client for official runs. It
+never starts a Codex process of its own or opens a second session.
 
 Outbound events: `hello`, `snapshot`, `run_started`, `run_status`, `agent_message`,
 `approval_requested`, `question_requested`, `run_completed`, `run_failed`, `run_cancelled`,

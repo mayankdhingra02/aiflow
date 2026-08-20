@@ -148,9 +148,11 @@ export function activate(context: vscode.ExtensionContext): void {
         // Tell the app whether this companion can act as the official Codex worker, so it
         // knows which backend to dispatch to. Presence of the extension is what is announced;
         // an unreachable IPC router still fails the individual run with a typed error.
-        // The official worker remains opt-in pending final app-level acceptance. When enabled,
-        // the host creates a fresh thread through the synthetic bootstrapper and never selects
-        // an arbitrary conversation already open in the user's UI.
+        // The official worker remains opt-in because compatibility is version-specific and its
+        // permission policy is inherited from the official extension. When enabled, the host
+        // reuses only an owner-validated cached conversation or creates a fresh one through the
+        // synthetic bootstrapper; it never selects an arbitrary conversation already open in
+        // the user's UI.
         announceOfficialWorker();
         render();
     });

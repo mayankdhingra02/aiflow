@@ -3,9 +3,10 @@ import { isProvisionalConversationId } from './worker';
 /**
  * Decides which official Codex conversation an Aiflow run executes in.
  *
- * The hard requirement is that a run must never be dispatched into an unrelated conversation
- * the user happens to have open. So a conversation is only accepted if it is observed to
- * appear *after* we asked for a new panel — never merely because it is present.
+ * Production resolution reuses only an owner-validated cached conversation or uses the
+ * nonce-correlated synthetic bootstrapper to create a fresh one. This compatibility-only panel
+ * resolver is not wired into production; an unrelated conversation the user happens to have
+ * open must never be adopted merely because it is present.
  */
 
 export const OFFICIAL_EXTENSION_ID = 'openai.chatgpt';
