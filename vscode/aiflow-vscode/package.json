@@ -94,6 +94,16 @@
           "group": "navigation@5"
         }
       ]
+    },
+    "configuration": {
+      "title": "Aiflow",
+      "properties": {
+        "aiflow.officialWorker.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Execute Aiflow runs through the official Codex extension. Opt-in and off by default because compatibility is currently proven only against openai.chatgpt@26.814.41407 and the official path inherits Codex's current permission policy."
+        }
+      }
     }
   },
   "scripts": {

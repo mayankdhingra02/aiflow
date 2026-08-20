@@ -25,14 +25,18 @@ Saved projects live in `~/Library/Application Support/Aiflow/saved-projects.json
 Chat→project mappings live in `~/Library/Application Support/Aiflow/chat-project-map.json`.
 Removing a project only forgets it — the repository on disk is never touched.
 
-## Approvals are always manual
+## Legacy App Server approvals (fallback)
+
+The details below apply when Aiflow uses its legacy App Server worker. The opt-in official
+VS Code worker inherits the official Codex extension's current policy; its menu-bar label says
+`Approval: Codex policy` rather than implying that this inline approval UI controls that worker.
 
 Three separate things, none of them automatic:
 
-1. **Starting a run** — clicking a project opens a confirmation sheet. There is no
+1. **Starting a run** — clicking a project opens a confirmation panel. There is no
    "don't ask again".
-2. **Codex permission requests** — surfaced as a native Allow Once / Deny sheet. The
-   decision applies to that one request only, and the run stays blocked on that exact
+2. **Codex permission requests** — surfaced as native Allow Once / Deny controls in the inline
+   panel. The decision applies to that one request only, and the run stays blocked on that exact
    request id until Codex confirms it resolved it.
 3. **Codex questions** — a request may carry several questions; each is shown with its
    options or a text field, and every one must be answered before the reply is sent.
@@ -84,7 +88,8 @@ only a convenience — every project button works without it.
 
 The app listens on `127.0.0.1:47321` (loopback only) from launch, speaking newline-delimited
 JSON to the optional VS Code companion in `vscode/aiflow-vscode/`. The companion is a
-viewer/controller for *this* run — it never starts Codex and never opens a second session.
+viewer/controller for legacy runs and the bounded official-worker client for official runs. It
+never starts a Codex process of its own or opens a second session.
 
 Outbound events: `hello`, `snapshot`, `run_started`, `run_status`, `agent_message`,
 `approval_requested`, `question_requested`, `run_completed`, `run_failed`, `run_cancelled`,

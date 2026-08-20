@@ -1,16 +1,24 @@
 # Aiflow Companion (VS Code)
 
-A thin live viewer and controller for the Codex run the **Aiflow macOS menu-bar app**
-already owns.
+Two roles, over one authenticated local bridge:
 
-It is not a Codex client. It never starts Codex, never opens a second session, and does not
-depend on the official Codex extension. Aiflow remains the source of truth; this extension
-renders what Aiflow reports and sends back a small set of verbs.
+1. **Worker (preferred path).** The macOS app asks the companion to execute a run, and the
+   companion drives the **official OpenAI Codex extension** (`openai.chatgpt`) to do it. The
+   session runs and is visible in the official Codex UI.
+2. **Viewer/controller (legacy path).** When the app runs Codex itself, the companion mirrors
+   and controls that run.
+
+The companion never starts a Codex process, never opens a second session, and never modifies
+the official extension. It uses `chatgpt.implementTodo` only once with a synthetic, Aiflow-owned
+temporary file to bootstrap an empty official thread; the user's prompt is submitted afterwards
+through Codex's local client-coordination IPC as a *follower*.
 
 ```
 Aiflow menu-bar app  ──(127.0.0.1:47321, newline-delimited JSON)──  VS Code companion
-   owns the Codex                                                    views + controls
-   App Server session                                                the same run
+                                                                      │
+                                                    official Codex local IPC router
+                                                                      │
+                                                     openai.chatgpt extension runs Codex
 ```
 
 ## What it shows
@@ -38,6 +46,136 @@ Plus a status-bar item: `Aiflow: Connected` / `Running` / `Waiting for approval`
 Approve/Deny/Answer always carry the exact request id the bridge reported. Aiflow ignores a
 command whose id does not match what is currently pending, so a stale click cannot resolve a
 newer request.
+
+## Official Codex worker
+
+> **Status: opt-in, off by default.** Enable with `aiflow.officialWorker.enabled`.
+>
+> App-level acceptance has **passed** against `openai.chatgpt@26.814.41407`: exact prompt
+> delivery, Sol/Low settings, normal completion, real-turn cancellation, and conversation reuse
+> across runs.
+>
+> **Version compatibility is not universal.** `26.814.41407` is the tested version.
+> `26.818.21641` bootstraps but rejects `thread-follower-start-turn`; that delta is deferred to
+> a follow-up. Treat other versions as unverified — this is why the worker stays opt-in.
+
+Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
+it if needed; it never bundles or redistributes it.
+
+For each run the companion:
+
+1. joins the official extension's local IPC router as an additional client,
+2. picks the conversation for the workspace — reusing the one it already has when that
+   conversation still has a live owner, otherwise minting a new one (below),
+3. applies the requested model and reasoning effort and **requires that to succeed**,
+4. submits the exact Aiflow prompt verbatim through follower IPC, then
+5. watches that one conversation's session log for that one turn's completion.
+
+Minting a conversation, which happens only when there is nothing live to reuse:
+
+1. snapshot session-file identities, then run one synthetic `implementTodo` turn with an
+   Aiflow-owned temporary file and unique nonce,
+2. correlate only a new or changed session containing that nonce — an already-open conversation
+   is never adopted,
+3. verify the bootstrap turn completed and recorded the requested workspace.
+
+The bootstrap TODO wrapper exists only on that synthetic first turn. The user's prompt never
+reaches `chatgpt.implementTodo`.
+
+### Conversation reuse
+
+Bootstrap is paid **once per live conversation**, not once per run. The companion keeps a map
+of canonical workspace path → conversation id, so `/tmp/foo` and `/private/tmp/foo` share one
+entry. Before reusing an entry it confirms the conversation still has an owner; if the owning
+VS Code client has gone, the entry is dropped and a fresh conversation is minted — always
+before the real prompt is dispatched, never after a turn has started.
+
+Completing, cancelling, or failing a turn does **not** discard the conversation: none of those
+prove it unusable, and ownership is revalidated before every run anyway. Model and effort are
+re-applied per run, so they can change between runs on a reused conversation.
+
+The map is **in memory only**. An official conversation becomes unowned when its owning client
+disappears, and reattaching across an extension-host restart is unproven — so nothing is
+written to disk, and reloading VS Code may cost one more bootstrap. Persistent, reopenable
+pairing is future work.
+
+Model/effort translation lives in one module (`src/codexIpc/models.ts`); nothing else
+hard-codes a Codex model id.
+
+### Permissions
+
+Aiflow sends no sandbox or approval overrides. The official worker therefore inherits whatever
+sandbox and approval policy the official Codex extension/conversation currently uses; Aiflow does
+not guarantee or enforce `workspace-write`, `on-request`, or reviewer `user` before dispatching
+the real prompt. Approval and question prompts remain in the official Codex UI, where you answer
+them. The worker never broadens permissions by sending `danger-full-access` or another override.
+
+The accepted `openai.chatgpt@26.814.41407` manual session recorded
+`workspace-write`/`on-request`/`user` in its session metadata. That is evidence about that
+accepted session, not a production pre-start safety gate. The session watcher can read this
+metadata after a turn has started, but the worker does not use it to verify policy before
+`startTurn`, and no proven pre-start follower request currently exposes those settings. Confirm
+the policy in the official Codex UI before using the opt-in official worker. The legacy App
+Server worker's approval behavior is unchanged.
+
+### Wire protocol
+
+Requests use the router's envelope:
+
+```
+{ type: "request", requestId, sourceClientId, version, method, params,
+  targetClientId?, timeoutMs? }
+```
+
+`targetClientId` is an **envelope** field, never part of a follower's `params`. Responses are
+matched by `requestId` and carry `resultType`; `thread-owner-discovery` answers with an empty
+`result` and names the owner in `handledByClientId`.
+
+Request versions follow the official extension's own table: owner-discovery 1, start-turn 1,
+update-thread-settings 1, interrupt-turn 4 — dropping to 3 when no `expectedTurnId` is known,
+exactly as the extension's own version function does. Cancellation sends
+`{ conversationId, mode: "user-stop", expectedTurnId }`.
+
+### Bootstrap note
+
+An empty `chatgpt.newCodexPanel` or `chatgpt.newChat` does not announce a routable conversation,
+and the follower router exposes no explicit thread-creation request. The companion therefore
+uses the narrow synthetic bootstrap above. It does not automate the UI and does not send the
+real Aiflow prompt through `implementTodo`.
+
+| Route | Result |
+| --- | --- |
+| `chatgpt.newCodexPanel` | executes; announces only `client-status-changed` with **no** conversation id |
+| `chatgpt.newChat` | same — no conversation id |
+| `thread-stream-following-status-requested` | `resultType: error`, `no-client-found` |
+| router method table | contains **no** thread-creation request; every `thread-follower-*` op addresses an existing `conversationId` |
+
+The low-level bootstrap and exact follower turn have been exercised against the official
+extension, and complete menu-bar app → companion acceptance has passed against the tested
+version. The official worker remains **off by default** because compatibility is version-specific
+and the path inherits the official Codex extension/conversation's permission policy rather than
+enforcing one. The legacy Aiflow worker remains available as the explicit fallback.
+
+### Fallback
+
+Before official dispatch, if no usable/designated official worker is available, `confirmRun()`
+selects the legacy App Server worker. If an official run has already been dispatched, an official
+worker failure remains visible and Aiflow does **not** silently replay the prompt through legacy;
+this prevents duplicate execution. `extension_unavailable` and `ipc_unavailable` clear official
+worker availability so a subsequent run can choose legacy. Other official errors, including
+thread, bootstrap, and start failures, do not automatically rerun through legacy. The selected
+worker is explicit and observable in the macOS app.
+
+## Troubleshooting
+
+- **"official Codex is unavailable"** — install/enable `openai.chatgpt`, then retry. Aiflow
+  reads the router socket at `~/.codex/ipc/ipc.sock`
+  (override with `CODEX_IPC_SOCKET`).
+- **The run never starts** — check that the official extension is active and that its session
+  directory is writable. The companion must be able to create and remove its temporary bootstrap
+  file under the OS temp directory.
+- **Completion never arrives** — sessions are read from `~/.codex/sessions`
+  (override with `CODEX_HOME`).
 
 ## Safety boundaries
 

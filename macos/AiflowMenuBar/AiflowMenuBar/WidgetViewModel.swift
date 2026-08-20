@@ -38,6 +38,23 @@ final class WidgetViewModel: ObservableObject {
     private var isPopoverVisible = false
     private var notificationsAvailable = true
 
+    /// Which execution backend served the current run. Explicit and observable — never an
+    /// ambiguous mix, and never two workers for one run.
+    enum RunWorker: String {
+        /// The official Codex VS Code extension executes the run; Aiflow drives it as a
+        /// follower through the companion.
+        case officialVSCode = "official-vscode"
+        /// Aiflow's own Codex App Server session (the legacy path, kept as fallback).
+        case legacyAppServer = "legacy-app-server"
+    }
+
+    /// The worker serving the run in flight, and the run's id for correlating worker reports.
+    @Published private(set) var activeWorker: RunWorker?
+    private var activeRunId: String?
+
+    /// True when a companion has reported that the official Codex worker is usable.
+    @Published private(set) var officialWorkerAvailable = false
+
     /// The companion bridge, if one is attached. Held strongly here while the bridge holds
     /// the controller weakly, so there is no cycle. The bridge is a mirror only — the run
     /// never depends on it being present or connected.
@@ -76,6 +93,15 @@ final class WidgetViewModel: ObservableObject {
 
     var models: [CodexModel] { config?.models ?? [] }
     var efforts: [String] { config?.reasoningEfforts ?? [] }
+    /// The official worker uses the official Codex extension's policy; Aiflow's Manual label
+    /// applies only to the legacy App Server path, where this app mediates approval requests.
+    var approvalDisplayLabel: String {
+        if activeWorker == .officialVSCode || (activeWorker == nil && officialWorkerAvailable) {
+            return "Approval: Codex policy"
+        }
+        return "Approval: Manual"
+    }
+
     var hasPrompt: Bool { !clipboardPrompt.isEmpty }
     var promptCharacterCount: Int { clipboardPrompt.count }
     var resolvedModelId: String? { config?.model(forRole: selectedModelRole)?.modelId }
@@ -251,27 +277,46 @@ final class WidgetViewModel: ObservableObject {
         guard case .confirming(let project) = runState else { return }
         guard let modelId = resolvedModelId, hasPrompt else { return }
 
-        guard let codexURL = CodexLocator.resolve() else {
-            runState = .failed(project: project, message: "Codex not installed")
-            return
-        }
-
         let prompt = clipboardPrompt  // full clipboard text, never the preview
         let effort = selectedEffort
-        let client = CodexAppServerClient()
-        self.client = client
         lastMessage = ""
         runningProject = project
         runState = .launching(project)
 
-        var started = BridgeEvent(type: .runStarted)
-        started.project = project.name
-        started.model = selectedModelRole
-        started.effort = effort
-        started.runState = runState.bridgeName
-        // A bounded preview only; the full prompt is not mirrored to the companion.
-        started.promptPreview = String(prompt.prefix(200))
-        emit(started)
+        let runId = UUID().uuidString
+        activeRunId = runId
+
+        // Prefer the official Codex extension when a companion is connected and has reported
+        // it usable; otherwise fall back to Aiflow's own App Server session. Exactly one of
+        // the two runs — never both.
+        // Execution goes to the single designated companion, never to every viewer: two
+        // companions receiving one execute_run would each start a Codex turn.
+        if officialWorkerAvailable, let bridge, bridge.hasDesignatedWorker,
+            bridge.sendToWorker(
+                .executeRun(
+                    runId: runId, project: project, prompt: prompt,
+                    model: selectedModelRole, effort: effort))
+        {
+            activeWorker = .officialVSCode
+            emitRunStarted(project: project, effort: effort, prompt: prompt)
+            return
+        }
+
+        // Only the legacy path needs Aiflow's own Codex executable; the official worker runs
+        // inside the companion's editor and has its own runtime.
+        activeWorker = .legacyAppServer
+        guard let codexURL = CodexLocator.resolve() else {
+            activeWorker = nil
+            activeRunId = nil
+            runningProject = nil
+            runState = .failed(project: project, message: "Codex not installed")
+            return
+        }
+
+        let client = CodexAppServerClient()
+        self.client = client
+
+        emitRunStarted(project: project, effort: effort, prompt: prompt)
 
         Task {
             notificationsAvailable = await notifications.prepareForRun()
@@ -414,6 +459,12 @@ final class WidgetViewModel: ObservableObject {
 
         runState = .cancelling(project)
         emit(.runStatus(runState.bridgeName))
+
+        // Route the interrupt to whichever worker is actually serving this run.
+        if activeWorker == .officialVSCode, let runId = activeRunId {
+            bridge?.sendToWorker(.cancelRun(runId: runId))
+            return
+        }
         Task { await client?.cancel() }
     }
 
@@ -438,6 +489,80 @@ final class WidgetViewModel: ObservableObject {
     func startCompanionBridgeIfNeeded() {
         guard bridge == nil else { return }
         attachBridge(AiflowBridgeServer())
+    }
+
+    /// Applies a report from the official Codex worker.
+    ///
+    /// Every report must name the run it belongs to and match the run in flight: a report from
+    /// a previous or unknown run must never complete, fail, or cancel the current one. Reports
+    /// are also ignored entirely unless the official worker is the one serving this run.
+    private func handleWorkerReport(_ command: BridgeCommand) {
+        guard activeWorker == .officialVSCode,
+            let runId = command.runId, runId == activeRunId,
+            let project = runningProject
+        else { return }
+
+        switch command.type {
+        case .workerAccepted:
+            runState = .running(project)
+
+        case .workerThread:
+            // The official conversation/turn now executing this run. Recorded for the status
+            // line only; the official Codex UI is where the conversation itself is visible.
+            if let conversationId = command.conversationId {
+                notice = command.turnId.map {
+                    "Official Codex turn \($0) in conversation \(conversationId)"
+                } ?? "Official Codex conversation \(conversationId)"
+            }
+
+        case .workerStatus:
+            runState = .running(project)
+
+        case .workerCompleted:
+            lastMessage = command.message ?? ""
+            runState = .completed(project)
+            finishWorkerRun()
+
+        case .workerFailed:
+            let detail = command.message ?? "official Codex worker failed"
+            // If the official path is unusable, stop preferring it so the next run falls back
+            // to Aiflow's own worker. The failure stays visible rather than silently retried.
+            if detail.hasPrefix("extension_unavailable") || detail.hasPrefix("ipc_unavailable") {
+                officialWorkerAvailable = false
+            }
+            runState = .failed(project: project, message: detail)
+            finishWorkerRun()
+
+        case .workerCancelled:
+            runState = .cancelled(project)
+            finishWorkerRun()
+
+        default:
+            break
+        }
+    }
+
+    private func finishWorkerRun() {
+        activeRunId = nil
+        activeWorker = nil
+        runningProject = nil
+    }
+
+    /// Records what the companion reports about official Codex availability.
+    func setOfficialWorkerAvailable(_ available: Bool) {
+        officialWorkerAvailable = available
+    }
+
+    private func emitRunStarted(project: SavedProject, effort: String, prompt: String) {
+        var started = BridgeEvent(type: .runStarted)
+        started.project = project.name
+        started.model = selectedModelRole
+        started.effort = effort
+        started.runState = runState.bridgeName
+        started.runId = activeRunId
+        // A bounded preview only; the full prompt is not mirrored to the companion here.
+        started.promptPreview = String(prompt.prefix(200))
+        emit(started)
     }
 
     private func emit(_ event: BridgeEvent) {
@@ -536,6 +661,14 @@ extension WidgetViewModel: BridgeController {
                 claimed == pending.id, let answers = command.answers
             else { return }
             respondToQuestion(answers)
+
+        case .workerAvailable:
+            // Availability describes the companion, not a run, so it carries no run id.
+            setOfficialWorkerAvailable(command.workerState == "ready")
+
+        case .workerAccepted, .workerThread, .workerStatus, .workerCompleted, .workerFailed,
+            .workerCancelled:
+            handleWorkerReport(command)
         }
     }
 }
@@ -568,6 +701,15 @@ extension WidgetViewModel {
 
     func handleEventForTesting(_ event: CodexSessionEvent, project: SavedProject) {
         handle(event, project: project)
+    }
+
+    /// Puts a run in flight under a chosen worker, as `confirmRun` would.
+    func startRunForTesting(_ project: SavedProject, worker: RunWorker, runId: String) {
+        runningProject = project
+        activeWorker = worker
+        activeRunId = runId
+        runState = .running(project)
+        lastMessage = ""
     }
 
     func setNotificationsAvailableForTesting(_ available: Bool) {

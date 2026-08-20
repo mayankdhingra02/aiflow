@@ -227,3 +227,104 @@ test('an oversized inbound frame destroys the connection', () => {
     assert.deepEqual(received, []);
     client.dispose();
 });
+
+// MARK: reconnect socket race
+//
+// A discarded socket still delivers `close` (and possibly data) afterwards. If that stale
+// callback clears the replacement socket and schedules another reconnect, one client ends up
+// with several live authenticated sockets, and a single execute_run is delivered more than
+// once.
+
+test('a stale close from the replaced socket does not disturb the new one', async () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    const a = sockets[0];
+    a.open();
+
+    client.reconnectNow();
+    const b = sockets[1];
+    b.open();
+    assert.equal(sockets.length, 2);
+
+    // A's close lands only now, after B is already current.
+    a.simulateClose();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(sockets.length, 2, 'the stale close must not schedule another connection');
+    assert.equal(client.isConnected, true, 'the replacement is still connected');
+    client.dispose();
+});
+
+test('an event arriving on a replaced socket is ignored, and one on the current socket is delivered once', async () => {
+    const { client, sockets } = makeClient();
+    const received: BridgeEvent[] = [];
+    client.on('event', (event: BridgeEvent) => received.push(event));
+
+    client.connect();
+    const a = sockets[0];
+    a.open();
+
+    client.reconnectNow();
+    const b = sockets[1];
+    b.open();
+
+    // Late traffic on the discarded socket must not reach the app.
+    a.feed('{"type":"execute_run","runId":"run-1"}\n');
+    assert.deepEqual(received, [], 'stale socket data is dropped');
+
+    b.feed('{"type":"execute_run","runId":"run-1"}\n');
+    assert.equal(received.length, 1, 'the current socket delivers exactly once');
+    assert.equal((received as BridgeEvent[])[0].runId, 'run-1');
+    client.dispose();
+});
+
+test('reconnectNow leaves exactly one connection even when close is delayed', async () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    sockets[0].open();
+
+    client.reconnectNow();
+    client.reconnectNow();
+
+    // Every retired socket reports its close late.
+    for (const socket of sockets.slice(0, -1)) {
+        socket.simulateClose();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const current = sockets[sockets.length - 1];
+    current.open();
+    assert.equal(client.isConnected, true);
+    // Two explicit reconnects create two replacements; the stale closes add none.
+    assert.equal(sockets.length, 3);
+    client.dispose();
+});
+
+test('an ordinary unexpected disconnect still reconnects exactly once', async () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    sockets[0].open();
+
+    sockets[0].simulateClose();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(sockets.length, 2, 'one replacement');
+    client.dispose();
+});
+
+test('a stale socket that connects late is destroyed rather than adopted', async () => {
+    const { client, sockets } = makeClient();
+    client.connect();
+    const a = sockets[0];
+
+    client.reconnectNow();
+    const b = sockets[1];
+    b.open();
+
+    // A finally reports it connected, long after being retired.
+    a.open();
+
+    assert.equal(a.destroyed_, true, 'the late connect is discarded');
+    assert.deepEqual(a.written, [], 'a retired socket never authenticates');
+    client.dispose();
+});

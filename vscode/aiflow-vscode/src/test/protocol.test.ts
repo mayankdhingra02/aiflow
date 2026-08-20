@@ -1,16 +1,20 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+    AiflowState,
     BRIDGE_HOST,
     BRIDGE_PORT,
     MAX_FRAME_BYTES,
     TOKEN_RELATIVE_PATH,
     LineBuffer,
+    admitRun,
+    parseExecutionRequest,
     encodeCommand,
     initialState,
     parseEvent,
     reduce,
-    statusLabel
+    statusLabel,
+    terminalEvent
 } from '../protocol';
 
 test('bridge targets loopback only', () => {
@@ -301,4 +305,210 @@ test('outbound auth command carries the token and nothing else', () => {
 
 test('token path points at Aiflow application support state', () => {
     assert.equal(TOKEN_RELATIVE_PATH, 'Library/Application Support/Aiflow/bridge-token');
+});
+
+// MARK: v2 execution requests
+
+test('a well-formed execution request is accepted', () => {
+    const request = parseExecutionRequest({
+        type: 'execute_run',
+        runId: 'run-1',
+        workspacePath: '/repos/demo',
+        prompt: 'Report the branch.',
+        model: 'sol',
+        effort: 'low'
+    });
+
+    assert.deepEqual(request, {
+        runId: 'run-1',
+        workspacePath: '/repos/demo',
+        prompt: 'Report the branch.',
+        model: 'sol',
+        effort: 'low'
+    });
+});
+
+test('an execution request without a run id is refused', () => {
+    // Without a run id a completion could be attributed to the wrong Aiflow job.
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', workspacePath: '/repos/demo', prompt: 'x' }),
+        undefined
+    );
+});
+
+test('an execution request without a prompt or workspace is refused', () => {
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', runId: 'r', prompt: 'x' }),
+        undefined
+    );
+    assert.equal(
+        parseExecutionRequest({ type: 'execute_run', runId: 'r', workspacePath: '/repos/demo' }),
+        undefined
+    );
+    assert.equal(
+        parseExecutionRequest({
+            type: 'execute_run',
+            runId: 'r',
+            workspacePath: '/repos/demo',
+            prompt: '   '
+        }),
+        undefined
+    );
+});
+
+test('a relative workspace path is refused', () => {
+    assert.equal(
+        parseExecutionRequest({
+            type: 'execute_run',
+            runId: 'r',
+            workspacePath: 'repos/demo',
+            prompt: 'x'
+        }),
+        undefined
+    );
+});
+
+test('only an execute_run event yields an execution request', () => {
+    assert.equal(
+        parseExecutionRequest({
+            type: 'run_started',
+            runId: 'r',
+            workspacePath: '/repos/demo',
+            prompt: 'x'
+        }),
+        undefined
+    );
+});
+
+test('execute_run and cancel_run parse as recognised events', () => {
+    assert.equal(parseEvent('{"type":"execute_run","runId":"r"}')?.type, 'execute_run');
+    assert.equal(parseEvent('{"type":"cancel_run","runId":"r"}')?.type, 'cancel_run');
+});
+
+test('an execute_run event is a worker instruction, not view state', () => {
+    const before = reduce(initialState(), { type: 'snapshot', runState: 'ready' });
+    const after = reduce(before, {
+        type: 'execute_run',
+        runId: 'r',
+        workspacePath: '/repos/demo',
+        prompt: 'x'
+    });
+    assert.deepEqual(after, before);
+});
+
+test('worker reports are outbound commands with their run id', () => {
+    for (const type of [
+        'worker_accepted',
+        'worker_thread',
+        'worker_status',
+        'worker_completed',
+        'worker_failed',
+        'worker_cancelled'
+    ] as const) {
+        const line = encodeCommand({ type, runId: 'run-1' });
+        assert.ok(line.includes('"runId":"run-1"'), type);
+        assert.ok(line.endsWith('\n'));
+    }
+});
+
+// MARK: execute_run admission
+//
+// A reconnect can redeliver the same execute_run. Treating that as "busy" would fail the run
+// that is currently succeeding.
+
+test('an execution request starts when nothing is running', () => {
+    assert.equal(admitRun(undefined, 'run-1'), 'start');
+});
+
+test('a duplicate of the active run is ignored, not rejected', () => {
+    assert.equal(admitRun('run-1', 'run-1'), 'ignore-duplicate');
+});
+
+test('a different run while one is active is rejected as busy', () => {
+    assert.equal(admitRun('run-1', 'run-2'), 'reject-busy');
+});
+
+/** A connected companion; statusLabel reports "Disconnected" otherwise, whatever the run did. */
+function connectedState(): AiflowState {
+    return reduce(initialState(), { type: 'hello' });
+}
+
+// MARK: terminal companion state
+//
+// The companion reported terminal outcomes to the macOS app but left its own panel on the
+// last transient state, so a cancelled run still read "Cancelling" in VS Code.
+
+test('a completed run lands on completed and keeps the final message', () => {
+    const running = reduce(connectedState(), {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'running'
+    });
+
+    const state = reduce(running, terminalEvent('completed', { finalMessage: 'AIFLOW_OK' }));
+
+    assert.equal(state.runState, 'completed');
+    assert.equal(statusLabel(state), 'Completed');
+    assert.equal(state.lastMessage, 'AIFLOW_OK');
+    assert.equal(state.project, '/repos/demo', 'the project stays visible on the terminal state');
+});
+
+test('an interrupted run lands on cancelled, not stuck on cancelling', () => {
+    let state = reduce(connectedState(), { type: 'run_started', project: '/repos/demo' });
+    state = reduce(state, { type: 'run_status', runState: 'cancelling' });
+    assert.equal(statusLabel(state), 'Cancelling');
+
+    state = reduce(state, terminalEvent('interrupted'));
+
+    assert.equal(state.runState, 'cancelled');
+    assert.equal(statusLabel(state), 'Cancelled');
+});
+
+test('a failed result lands on failed and carries the reason', () => {
+    const state = reduce(connectedState(), terminalEvent('failed', { errorMessage: 'boom' }));
+
+    assert.equal(state.runState, 'failed');
+    assert.equal(statusLabel(state), 'Failed');
+    assert.equal(state.lastMessage, 'boom');
+});
+
+test('a thrown worker error is reported the same way as a failed result', () => {
+    const detail = 'thread_unavailable: no conversation';
+    const state = reduce(initialState(), terminalEvent('failed', { errorMessage: detail }));
+
+    assert.equal(state.runState, 'failed');
+    assert.equal(state.lastMessage, detail);
+});
+
+test('a failed outcome without a reason still says something useful', () => {
+    assert.equal(
+        reduce(initialState(), terminalEvent('failed')).lastMessage,
+        'Codex reported a failure'
+    );
+});
+
+test('a terminal outcome clears any pending approval or question', () => {
+    let state = reduce(initialState(), { type: 'approval_requested', requestId: 7, summary: 'npm i' });
+    assert.ok(state.pendingApproval);
+
+    state = reduce(state, terminalEvent('interrupted'));
+    assert.equal(state.pendingApproval, undefined);
+});
+
+test('a cancelled run does not block the next one', () => {
+    // cancelled -> launching -> running, with no stale cancellation state left behind.
+    let state = reduce(connectedState(), { type: 'run_started', project: '/repos/demo' });
+    state = reduce(state, terminalEvent('interrupted'));
+    assert.equal(state.runState, 'cancelled');
+
+    state = reduce(state, {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'launching'
+    });
+    assert.equal(state.runState, 'launching');
+    assert.equal(state.lastMessage, undefined, 'the previous run leaves no message behind');
+
+    state = reduce(state, { type: 'run_status', runState: 'running' });
+    assert.equal(statusLabel(state), 'Running');
 });
