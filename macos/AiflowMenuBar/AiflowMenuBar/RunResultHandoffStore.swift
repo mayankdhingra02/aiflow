@@ -3,17 +3,19 @@ import Foundation
 enum RunResultHandoffStoreError: Error, Equatable {
     case invalidRunId
     case conflictingExistingRecord
+    case conflictingDeliveredRecord
+    case handoffNotFound
 }
 
-/// Immutable local outbox for terminal Aiflow results.
+/// Durable local outbox for terminal Aiflow results.
 ///
-/// Each run occupies exactly one JSON file. Re-persisting the exact same
-/// canonical envelope is idempotent; different evidence for the same run id
-/// is rejected rather than overwritten.
+/// Pending records are immutable. Delivery moves the exact JSON file from
+/// `pending` to `delivered`; a delivered record is also immutable.
 final class RunResultHandoffStore {
     let directoryURL: URL
+    let deliveredDirectoryURL: URL
 
-    static func defaultDirectoryURL() -> URL {
+    static func defaultBaseDirectoryURL() -> URL {
         let base =
             FileManager.default.urls(
                 for: .applicationSupportDirectory,
@@ -22,25 +24,54 @@ final class RunResultHandoffStore {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
 
         return base.appendingPathComponent(
-            "Aiflow/handoffs/pending",
+            "Aiflow/handoffs",
+            isDirectory: true
+        )
+    }
+
+    static func defaultDirectoryURL() -> URL {
+        defaultBaseDirectoryURL().appendingPathComponent(
+            "pending",
+            isDirectory: true
+        )
+    }
+
+    static func defaultDeliveredDirectoryURL() -> URL {
+        defaultBaseDirectoryURL().appendingPathComponent(
+            "delivered",
             isDirectory: true
         )
     }
 
     init(
-        directoryURL: URL = RunResultHandoffStore.defaultDirectoryURL()
+        directoryURL: URL = RunResultHandoffStore.defaultDirectoryURL(),
+        deliveredDirectoryURL: URL? = nil
     ) {
         self.directoryURL = directoryURL
+
+        if let deliveredDirectoryURL {
+            self.deliveredDirectoryURL = deliveredDirectoryURL
+        } else if directoryURL.standardizedFileURL
+            == RunResultHandoffStore.defaultDirectoryURL().standardizedFileURL
+        {
+            self.deliveredDirectoryURL =
+                RunResultHandoffStore.defaultDeliveredDirectoryURL()
+        } else {
+            self.deliveredDirectoryURL = directoryURL.appendingPathComponent(
+                "delivered",
+                isDirectory: true
+            )
+        }
     }
 
     func persist(_ handoff: RunResultHandoff) throws {
-        guard UUID(uuidString: handoff.runId) != nil else {
+        guard isValidRunId(handoff.runId) else {
             throw RunResultHandoffStoreError.invalidRunId
         }
 
-        try ensureDirectoryPermissions()
+        try ensureDirectoryPermissions(at: directoryURL)
 
-        let url = fileURL(for: handoff.runId)
+        let url = pendingFileURL(for: handoff.runId)
         let newData = try encode(handoff)
 
         if FileManager.default.fileExists(atPath: url.path) {
@@ -56,22 +87,103 @@ final class RunResultHandoffStore {
             throw RunResultHandoffStoreError.conflictingExistingRecord
         }
 
+        let deliveredURL = deliveredFileURL(for: handoff.runId)
+
+        if FileManager.default.fileExists(atPath: deliveredURL.path) {
+            guard
+                let deliveredData = try? Data(contentsOf: deliveredURL),
+                deliveredData == newData
+            else {
+                throw RunResultHandoffStoreError.conflictingDeliveredRecord
+            }
+
+            return
+        }
+
         try newData.write(to: url, options: .atomic)
         try ensureFilePermissions(at: url)
     }
 
     func handoff(runId: String) -> RunResultHandoff? {
-        guard UUID(uuidString: runId) != nil else {
+        guard isValidRunId(runId) else {
             return nil
         }
 
-        return decode(from: fileURL(for: runId))
+        return decode(from: pendingFileURL(for: runId))
+    }
+
+    func deliveredHandoff(runId: String) -> RunResultHandoff? {
+        guard isValidRunId(runId) else {
+            return nil
+        }
+
+        return decode(from: deliveredFileURL(for: runId))
     }
 
     func pendingHandoffs() -> [RunResultHandoff] {
+        loadHandoffs(from: directoryURL)
+    }
+
+    func deliveredHandoffs() -> [RunResultHandoff] {
+        loadHandoffs(from: deliveredDirectoryURL)
+    }
+
+    /// Marks one exact run as delivered.
+    ///
+    /// This is idempotent. If the pending record has already been moved to
+    /// `delivered`, calling this again succeeds without creating another copy.
+    func markDelivered(runId: String) throws {
+        guard isValidRunId(runId) else {
+            throw RunResultHandoffStoreError.invalidRunId
+        }
+
+        let pendingURL = pendingFileURL(for: runId)
+        let deliveredURL = deliveredFileURL(for: runId)
+
+        try ensureDirectoryPermissions(at: directoryURL)
+        try ensureDirectoryPermissions(at: deliveredDirectoryURL)
+
+        let pendingExists =
+            FileManager.default.fileExists(atPath: pendingURL.path)
+        let deliveredExists =
+            FileManager.default.fileExists(atPath: deliveredURL.path)
+
+        if deliveredExists {
+            guard let deliveredData = try? Data(contentsOf: deliveredURL) else {
+                throw RunResultHandoffStoreError.conflictingDeliveredRecord
+            }
+
+            if pendingExists {
+                guard
+                    let pendingData = try? Data(contentsOf: pendingURL),
+                    pendingData == deliveredData
+                else {
+                    throw RunResultHandoffStoreError.conflictingDeliveredRecord
+                }
+
+                try FileManager.default.removeItem(at: pendingURL)
+            }
+
+            try ensureFilePermissions(at: deliveredURL)
+            return
+        }
+
+        guard pendingExists else {
+            throw RunResultHandoffStoreError.handoffNotFound
+        }
+
+        try FileManager.default.moveItem(
+            at: pendingURL,
+            to: deliveredURL
+        )
+
+        try ensureFilePermissions(at: deliveredURL)
+    }
+
+    private func loadHandoffs(from directory: URL) -> [RunResultHandoff] {
         guard
             let urls = try? FileManager.default.contentsOfDirectory(
-                at: directoryURL,
+                at: directory,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )
@@ -86,12 +198,24 @@ final class RunResultHandoffStore {
                 if lhs.finishedAt == rhs.finishedAt {
                     return lhs.runId < rhs.runId
                 }
+
                 return lhs.finishedAt < rhs.finishedAt
             }
     }
 
-    private func fileURL(for runId: String) -> URL {
+    private func isValidRunId(_ runId: String) -> Bool {
+        UUID(uuidString: runId) != nil
+    }
+
+    private func pendingFileURL(for runId: String) -> URL {
         directoryURL.appendingPathComponent(
+            "\(runId).json",
+            isDirectory: false
+        )
+    }
+
+    private func deliveredFileURL(for runId: String) -> URL {
+        deliveredDirectoryURL.appendingPathComponent(
             "\(runId).json",
             isDirectory: false
         )
@@ -111,18 +235,21 @@ final class RunResultHandoffStore {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(RunResultHandoff.self, from: data)
+        return try? decoder.decode(
+            RunResultHandoff.self,
+            from: data
+        )
     }
 
-    private func ensureDirectoryPermissions() throws {
+    private func ensureDirectoryPermissions(at directory: URL) throws {
         try FileManager.default.createDirectory(
-            at: directoryURL,
+            at: directory,
             withIntermediateDirectories: true
         )
 
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o700],
-            ofItemAtPath: directoryURL.path
+            ofItemAtPath: directory.path
         )
     }
 

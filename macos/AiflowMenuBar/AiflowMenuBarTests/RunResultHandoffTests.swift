@@ -209,6 +209,68 @@ final class RunResultHandoffTests: XCTestCase {
         XCTAssertEqual(viewModel.runState, .completed(project))
     }
 
+    func testAssignedReturnChatOverridesActiveBrowserAtDispatch() throws {
+        let store = RunResultHandoffStore(
+            directoryURL: directory.appendingPathComponent("pending")
+        )
+
+        let viewModel = makeViewModel(
+            detectChat: {
+                "https://chatgpt.com/c/wrong-active-chat"
+            },
+            handoffStore: store,
+            now: Date.init
+        )
+
+        viewModel.setReturnChatURL(
+            project,
+            rawURL:
+                "https://chatgpt.com/g/g-project/c/right-return-chat"
+        )
+
+        let target = try XCTUnwrap(
+            viewModel.sourceChatTargetForRun(project)
+        )
+
+        XCTAssertEqual(
+            target.url,
+            "https://chatgpt.com/c/right-return-chat"
+        )
+
+        XCTAssertEqual(
+            target.conversationId,
+            "right-return-chat"
+        )
+    }
+
+    func testUnmappedProjectFallsBackToActiveBrowserAtDispatch() throws {
+        let store = RunResultHandoffStore(
+            directoryURL: directory.appendingPathComponent("pending")
+        )
+
+        let viewModel = makeViewModel(
+            detectChat: {
+                "https://chatgpt.com/c/active-fallback"
+            },
+            handoffStore: store,
+            now: Date.init
+        )
+
+        let target = try XCTUnwrap(
+            viewModel.sourceChatTargetForRun(project)
+        )
+
+        XCTAssertEqual(
+            target.url,
+            "https://chatgpt.com/c/active-fallback"
+        )
+
+        XCTAssertEqual(
+            target.conversationId,
+            "active-fallback"
+        )
+    }
+
     func testSourceChatTargetIsCapturedAtRunStart() throws {
         var current = "https://chatgpt.com/c/chat-one"
         let store = RunResultHandoffStore(directoryURL: directory.appendingPathComponent("pending"))

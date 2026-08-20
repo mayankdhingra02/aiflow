@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             WidgetViewModel.shared.startCompanionBridgeIfNeeded()
+            WidgetViewModel.shared.startHandoffTransportIfNeeded()
         }
     }
 }

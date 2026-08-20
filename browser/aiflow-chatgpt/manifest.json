@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Aiflow ChatGPT Handoff",
+  "version": "0.1.0",
+  "description": "Returns completed Aiflow Codex results to the exact originating ChatGPT conversation.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Aiflow ChatGPT Handoff"
+  },
+  "options_page": "options.html",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:47322"
+  }
+}

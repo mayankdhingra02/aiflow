@@ -220,6 +220,167 @@ final class RunResultHandoffStoreTests: XCTestCase {
         XCTAssertFalse(hasForbiddenPromptField(json))
     }
 
+    func testMarkDeliveredMovesPendingHandoff() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let handoff = sampleHandoff()
+
+        try store.persist(handoff)
+
+        XCTAssertEqual(
+            store.handoff(runId: handoff.runId),
+            handoff
+        )
+        XCTAssertNil(
+            store.deliveredHandoff(runId: handoff.runId)
+        )
+
+        try store.markDelivered(runId: handoff.runId)
+
+        XCTAssertNil(
+            store.handoff(runId: handoff.runId)
+        )
+        XCTAssertEqual(
+            store.deliveredHandoff(runId: handoff.runId),
+            handoff
+        )
+        XCTAssertTrue(store.pendingHandoffs().isEmpty)
+        XCTAssertEqual(
+            store.deliveredHandoffs().map(\.runId),
+            [handoff.runId]
+        )
+    }
+
+    func testMarkDeliveredIsIdempotent() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let handoff = sampleHandoff()
+
+        try store.persist(handoff)
+        try store.markDelivered(runId: handoff.runId)
+
+        XCTAssertNoThrow(
+            try store.markDelivered(runId: handoff.runId)
+        )
+
+        XCTAssertEqual(
+            store.deliveredHandoffs().map(\.runId),
+            [handoff.runId]
+        )
+    }
+
+    func testDeliveredFilePermissionsAre0600() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let handoff = sampleHandoff()
+
+        try store.persist(handoff)
+        try store.markDelivered(runId: handoff.runId)
+
+        let path = store.deliveredDirectoryURL
+            .appendingPathComponent("\(handoff.runId).json")
+            .path
+
+        let attributes =
+            try FileManager.default.attributesOfItem(atPath: path)
+
+        let permissions = try XCTUnwrap(
+            attributes[.posixPermissions] as? NSNumber
+        )
+
+        XCTAssertEqual(permissions.int16Value, 0o600)
+    }
+
+    func testDeliveredDirectoryPermissionsAre0700() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let handoff = sampleHandoff()
+
+        try store.persist(handoff)
+        try store.markDelivered(runId: handoff.runId)
+
+        let attributes =
+            try FileManager.default.attributesOfItem(
+                atPath: store.deliveredDirectoryURL.path
+            )
+
+        let permissions = try XCTUnwrap(
+            attributes[.posixPermissions] as? NSNumber
+        )
+
+        XCTAssertEqual(permissions.int16Value, 0o700)
+    }
+
+    func testMarkDeliveredRejectsInvalidRunId() {
+        let store = RunResultHandoffStore(directoryURL: directory)
+
+        XCTAssertThrowsError(
+            try store.markDelivered(runId: "../../escape")
+        ) {
+            XCTAssertEqual(
+                $0 as? RunResultHandoffStoreError,
+                .invalidRunId
+            )
+        }
+    }
+
+    func testMarkDeliveredRejectsUnknownRun() {
+        let store = RunResultHandoffStore(directoryURL: directory)
+
+        XCTAssertThrowsError(
+            try store.markDelivered(
+                runId: "00000000-0000-0000-0000-000000000000"
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? RunResultHandoffStoreError,
+                .handoffNotFound
+            )
+        }
+    }
+
+    func testPersistAfterDeliveryIsIdempotent() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let handoff = sampleHandoff()
+
+        try store.persist(handoff)
+        try store.markDelivered(runId: handoff.runId)
+
+        XCTAssertNoThrow(try store.persist(handoff))
+
+        XCTAssertTrue(store.pendingHandoffs().isEmpty)
+        XCTAssertEqual(
+            store.deliveredHandoffs().map(\.runId),
+            [handoff.runId]
+        )
+    }
+
+    func testDifferentRecordCannotReplaceDeliveredHandoff() throws {
+        let store = RunResultHandoffStore(directoryURL: directory)
+        let runId = UUID().uuidString
+
+        let first = sampleHandoff(
+            runId: runId,
+            finalMessage: "first"
+        )
+
+        let second = sampleHandoff(
+            runId: runId,
+            finalMessage: "second"
+        )
+
+        try store.persist(first)
+        try store.markDelivered(runId: runId)
+
+        XCTAssertThrowsError(try store.persist(second)) {
+            XCTAssertEqual(
+                $0 as? RunResultHandoffStoreError,
+                .conflictingDeliveredRecord
+            )
+        }
+
+        XCTAssertEqual(
+            store.deliveredHandoff(runId: runId),
+            first
+        )
+    }
+
     private func sampleHandoff(
         runId: String = UUID().uuidString,
         modelRole: String = "sol",
@@ -231,7 +392,7 @@ final class RunResultHandoffStoreTests: XCTestCase {
         outcome: RunResultHandoff.Outcome = .completed,
         finalMessage: String = "done",
         errorMessage: String? = nil,
-        startedAt: Date = Date(),
+        startedAt: Date = Date(timeIntervalSince1970: 1_700_000_010),
         finishedAt: Date = Date(timeIntervalSince1970: 1_700_000_011)
     ) -> RunResultHandoff {
         RunResultHandoff(
