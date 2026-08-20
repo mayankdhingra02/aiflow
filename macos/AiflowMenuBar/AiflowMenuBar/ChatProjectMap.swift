@@ -25,13 +25,36 @@ final class ChatProjectMap {
         mappings[chatURL]
     }
 
+    /// The single ChatGPT conversation assigned as this project's return target.
+    func chatURL(forProjectPath projectPath: String) -> String? {
+        mappings
+            .filter { $0.value == projectPath }
+            .map(\.key)
+            .sorted()
+            .first
+    }
+
+    /// Assigns one return chat to one project.
+    ///
+    /// A project may have only one return chat. Reassigning the project removes
+    /// any previous chat->project entry for that project. A chat itself also maps
+    /// to only one project because the dictionary key is unique.
     func setMapping(chatURL: String, projectPath: String) {
+        mappings = mappings.filter { key, value in
+            value != projectPath || key == chatURL
+        }
+
         mappings[chatURL] = projectPath
         save()
     }
 
     func removeMapping(chatURL: String) {
         mappings.removeValue(forKey: chatURL)
+        save()
+    }
+
+    func removeMapping(forProjectPath projectPath: String) {
+        mappings = mappings.filter { $0.value != projectPath }
         save()
     }
 

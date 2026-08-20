@@ -245,18 +245,49 @@ final class WidgetViewModel: ObservableObject {
 
     // MARK: - Chat mapping (optional convenience)
 
+    func returnChatURL(for project: SavedProject) -> String? {
+        map.chatURL(forProjectPath: project.path)
+    }
+
+    func setReturnChatURL(_ project: SavedProject, rawURL: String) {
+        guard let normalized = ChatURL.normalize(rawURL) else {
+            notice = "Enter a valid ChatGPT conversation link."
+            return
+        }
+
+        map.setMapping(
+            chatURL: normalized,
+            projectPath: project.path
+        )
+
+        objectWillChange.send()
+        notice = "Return chat set for \(project.name)"
+    }
+
     func mapCurrentChat(to project: SavedProject) {
         guard let chatURL else {
             notice = "No ChatGPT conversation detected"
             return
         }
-        map.setMapping(chatURL: chatURL, projectPath: project.path)
+
+        setReturnChatURL(
+            project,
+            rawURL: chatURL
+        )
+    }
+
+    func clearReturnChat(for project: SavedProject) {
+        map.removeMapping(
+            forProjectPath: project.path
+        )
+
         objectWillChange.send()
-        notice = "Chat mapped to \(project.name)"
+        notice = "Return chat removed for \(project.name)"
     }
 
     func unmapCurrentChat() {
         guard let chatURL else { return }
+
         map.removeMapping(chatURL: chatURL)
         objectWillChange.send()
         notice = "Mapping removed"
@@ -309,7 +340,7 @@ final class WidgetViewModel: ObservableObject {
         activeHandoffContext = ActiveRunHandoffContext(
             runId: runId,
             project: project,
-            sourceChat: captureChatTargetForRun(),
+            sourceChat: sourceChatTargetForRun(project),
             modelRole: selectedModelRole,
             modelId: modelId,
             effort: effort,
@@ -375,12 +406,34 @@ final class WidgetViewModel: ObservableObject {
         }
     }
 
-    private func captureChatTargetForRun() -> RunResultHandoff.ChatTarget? {
+    /// Resolves the return destination at dispatch time.
+    ///
+    /// An explicitly assigned project Return Chat is authoritative. Only when a
+    /// project has no assignment do we fall back to the currently detected browser
+    /// conversation. Once resolved, the caller snapshots this target into the active
+    /// handoff context, so changing tabs or mappings mid-run cannot retarget the run.
+    func sourceChatTargetForRun(
+        _ project: SavedProject
+    ) -> RunResultHandoff.ChatTarget? {
+        if let assigned = map.chatURL(forProjectPath: project.path) {
+            // A stored assignment is authoritative. If it is somehow corrupt,
+            // fail closed rather than silently sending to another active chat.
+            guard let normalized = ChatURL.normalize(assigned) else {
+                return nil
+            }
+
+            return RunResultHandoff.ChatTarget(
+                url: normalized,
+                conversationId: ChatURL.conversationID(from: normalized)
+            )
+        }
+
         let detected = detectChat()
         let normalized = ChatURL.normalize(detected)
         chatURL = normalized
 
         guard let normalized else { return nil }
+
         return RunResultHandoff.ChatTarget(
             url: normalized,
             conversationId: ChatURL.conversationID(from: normalized)

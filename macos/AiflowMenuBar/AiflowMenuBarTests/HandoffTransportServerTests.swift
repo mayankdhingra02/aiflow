@@ -287,6 +287,119 @@ final class HandoffTransportServerTests: XCTestCase {
         )
     }
 
+    func testWrongTokenReturnsExplicitAuthenticationFailure()
+        throws
+    {
+        let handoff =
+            sampleHandoff(
+                finishedAt: 1
+            )
+
+        try store.persist(handoff)
+
+        XCTAssertEqual(
+            try receiveEvent().type,
+            .hello
+        )
+
+        try send(
+            .auth(token: "definitely-wrong-token")
+        )
+
+        let error =
+            try receiveEvent()
+
+        XCTAssertEqual(
+            error.type,
+            .error
+        )
+
+        XCTAssertEqual(
+            error.error,
+            "authentication_failed"
+        )
+
+        // Prove authentication failure did not expose the outbox.
+        XCTAssertNotNil(
+            store.handoff(
+                runId: handoff.runId
+            )
+        )
+
+        // The same connection may authenticate correctly afterward.
+        try send(
+            .auth(token: token)
+        )
+
+        XCTAssertEqual(
+            try receiveEvent().type,
+            .ready
+        )
+
+        try send(
+            .next()
+        )
+
+        XCTAssertEqual(
+            try receiveEvent().runId,
+            handoff.runId
+        )
+    }
+
+    func testWebSocketProtocolPingKeepsConnectionUsable()
+        throws
+    {
+        _ = try receiveEvent()
+
+        try send(
+            .auth(token: token)
+        )
+
+        XCTAssertEqual(
+            try receiveEvent().type,
+            .ready
+        )
+
+        let expectation =
+            XCTestExpectation(
+                description:
+                    "websocket protocol ping"
+            )
+
+        var pingError: Error?
+
+        socket.sendPing {
+            error in
+            pingError = error
+            expectation.fulfill()
+        }
+
+        let result =
+            XCTWaiter.wait(
+                for: [expectation],
+                timeout: 3
+            )
+
+        XCTAssertEqual(
+            result,
+            .completed
+        )
+
+        if let pingError {
+            throw pingError
+        }
+
+        // Prove application messaging still works afterward.
+        try send(
+            .ping()
+        )
+
+        XCTAssertEqual(
+            try receiveEvent().type,
+            .pong
+        )
+    }
+
     func testPingDoesNotTouchOutbox()
         throws
     {

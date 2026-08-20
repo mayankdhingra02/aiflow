@@ -237,7 +237,13 @@ final class HandoffTransportServer: @unchecked Sendable {
                     expected: expected
                 )
             else {
-                connection.cancel()
+                // Keep the WebSocket alive long enough to return an
+                // explicit authentication error. The client remains
+                // unauthenticated and cannot read the outbox.
+                send(
+                    .error("authentication_failed"),
+                    to: connection
+                )
                 return
             }
 
@@ -550,7 +556,7 @@ final class HandoffTransportServer: @unchecked Sendable {
             nwConnection.receiveMessage {
                 [weak self]
                 data,
-                _,
+                context,
                 _,
                 error in
 
@@ -558,11 +564,45 @@ final class HandoffTransportServer: @unchecked Sendable {
                     return
                 }
 
-                if let error {
-                    _ = error
+                if error != nil {
                     self.closeOnce()
                     self.nwConnection.cancel()
                     return
+                }
+
+                let webSocketMetadata =
+                    context?
+                        .protocolMetadata(
+                            definition:
+                                NWProtocolWebSocket
+                                    .definition
+                        )
+                        as? NWProtocolWebSocket.Metadata
+
+                if let webSocketMetadata {
+                    switch webSocketMetadata.opcode {
+                    case .close:
+                        // A peer close is not an application JSON message.
+                        // Release the active-client slot immediately so a
+                        // reconnecting browser may authenticate.
+                        self.closeOnce()
+                        self.nwConnection.cancel()
+                        return
+
+                    case .ping, .pong:
+                        // autoReplyPing handles protocol ping replies.
+                        // Control-frame payloads must never reach the JSON
+                        // command decoder.
+                        self.readNext()
+                        return
+
+                    case .text, .binary, .cont:
+                        break
+
+                    @unknown default:
+                        self.cancel()
+                        return
+                    }
                 }
 
                 if let data,

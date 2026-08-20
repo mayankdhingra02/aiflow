@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @ObservedObject var viewModel: WidgetViewModel
     @State private var renaming: SavedProject?
     @State private var removing: SavedProject?
+    @State private var mappingChat: SavedProject?
     @State private var confirmingCancel = false
 
     /// What the window is currently asking the user for.
@@ -19,6 +20,7 @@ struct MenuBarView: View {
         case approval
         case question
         case confirmingRun(SavedProject)
+        case mappingChat(SavedProject)
         case renaming(SavedProject)
         case removing(SavedProject)
     }
@@ -29,6 +31,7 @@ struct MenuBarView: View {
         if viewModel.pendingApproval != nil { return .approval }
         if viewModel.pendingQuestion != nil { return .question }
         if let project = viewModel.confirmingProject { return .confirmingRun(project) }
+        if let project = mappingChat { return .mappingChat(project) }
         if let project = renaming { return .renaming(project) }
         if let project = removing { return .removing(project) }
         return .normal
@@ -49,6 +52,20 @@ struct MenuBarView: View {
 
             case .confirmingCancel:
                 cancelConfirmPanel
+
+            case .mappingChat(let project):
+                ReturnChatPanel(
+                    project: project,
+                    initialURL: viewModel.returnChatURL(for: project)
+                ) { rawURL in
+                    if let rawURL {
+                        viewModel.setReturnChatURL(
+                            project,
+                            rawURL: rawURL
+                        )
+                    }
+                    mappingChat = nil
+                }
 
             case .approval:
                 if let request = viewModel.pendingApproval {
@@ -265,10 +282,20 @@ struct MenuBarView: View {
         .disabled(!viewModel.canRunProjects)
         .help(project.path)
         .contextMenu {
-            Button("Map Current Chat") { viewModel.mapCurrentChat(to: project) }
-            if viewModel.isMapped(project) {
-                Button("Remove Chat Mapping") { viewModel.unmapCurrentChat() }
+            Button("Set Return Chat…") {
+                mappingChat = project
             }
+
+            Button("Use Current Chat as Return Chat") {
+                viewModel.mapCurrentChat(to: project)
+            }
+
+            if viewModel.returnChatURL(for: project) != nil {
+                Button("Remove Return Chat") {
+                    viewModel.clearReturnChat(for: project)
+                }
+            }
+
             Divider()
             Button("Rename…") { renaming = project }
             Button("Reveal in Finder") { viewModel.revealInFinder(project) }
@@ -468,6 +495,73 @@ private struct QuestionPanel: View {
 
     private func binding(for id: String) -> Binding<String> {
         Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0 })
+    }
+}
+
+private struct ReturnChatPanel: View {
+    let project: SavedProject
+    let onFinish: (String?) -> Void
+
+    @State private var url: String
+
+    init(
+        project: SavedProject,
+        initialURL: String?,
+        onFinish: @escaping (String?) -> Void
+    ) {
+        self.project = project
+        self.onFinish = onFinish
+        _url = State(initialValue: initialURL ?? "")
+    }
+
+    private var normalizedURL: String? {
+        ChatURL.normalize(url)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Set Return Chat")
+                .font(.headline)
+
+            Text(project.name)
+                .font(.callout)
+
+            Text(
+                "Paste the ChatGPT conversation link that should receive this project's Codex results."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            TextField(
+                "https://chatgpt.com/c/…",
+                text: $url
+            )
+            .textFieldStyle(.roundedBorder)
+
+            if !url.isEmpty && normalizedURL == nil {
+                Text("Enter a valid ChatGPT conversation URL.")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Back") {
+                    onFinish(nil)
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button("Save") {
+                    if let normalizedURL {
+                        onFinish(normalizedURL)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(normalizedURL == nil)
+            }
+        }
     }
 }
 

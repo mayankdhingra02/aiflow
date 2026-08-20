@@ -59,6 +59,79 @@ final class ChatProjectMapTests: XCTestCase {
         XCTAssertEqual(map.projectPath(for: "https://chatgpt.com/c/xyz"), "/repos/viz")
     }
 
+    func testProjectCanResolveItsAssignedReturnChat() {
+        let map = ChatProjectMap(fileURL: fileURL)
+
+        map.setMapping(
+            chatURL: "https://chatgpt.com/c/abc",
+            projectPath: "/repos/ef"
+        )
+
+        XCTAssertEqual(
+            map.chatURL(forProjectPath: "/repos/ef"),
+            "https://chatgpt.com/c/abc"
+        )
+    }
+
+    func testReassigningProjectReplacesPreviousReturnChat() {
+        let map = ChatProjectMap(fileURL: fileURL)
+
+        map.setMapping(
+            chatURL: "https://chatgpt.com/c/old",
+            projectPath: "/repos/ef"
+        )
+
+        map.setMapping(
+            chatURL: "https://chatgpt.com/c/new",
+            projectPath: "/repos/ef"
+        )
+
+        XCTAssertNil(
+            map.projectPath(
+                for: "https://chatgpt.com/c/old"
+            )
+        )
+
+        XCTAssertEqual(
+            map.projectPath(
+                for: "https://chatgpt.com/c/new"
+            ),
+            "/repos/ef"
+        )
+
+        XCTAssertEqual(
+            map.chatURL(
+                forProjectPath: "/repos/ef"
+            ),
+            "https://chatgpt.com/c/new"
+        )
+    }
+
+    func testRemovingProjectReturnChatRemovesItsMapping() {
+        let map = ChatProjectMap(fileURL: fileURL)
+
+        map.setMapping(
+            chatURL: "https://chatgpt.com/c/abc",
+            projectPath: "/repos/ef"
+        )
+
+        map.removeMapping(
+            forProjectPath: "/repos/ef"
+        )
+
+        XCTAssertNil(
+            map.chatURL(
+                forProjectPath: "/repos/ef"
+            )
+        )
+
+        XCTAssertNil(
+            map.projectPath(
+                for: "https://chatgpt.com/c/abc"
+            )
+        )
+    }
+
     func testUnknownConversationHasNoMapping() {
         XCTAssertNil(ChatProjectMap(fileURL: fileURL).projectPath(for: "https://chatgpt.com/c/nope"))
     }
