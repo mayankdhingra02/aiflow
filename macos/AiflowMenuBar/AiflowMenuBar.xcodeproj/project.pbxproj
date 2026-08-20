@@ -22,14 +22,18 @@
 		6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */; };
 		796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */; };
 		7F117E936402AB6825198EDD /* CodexLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */; };
+		7F1AF36094AC29BD0CF8B579 /* RunResultHandoffStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E99E943AAA647F203E588457 /* RunResultHandoffStoreTests.swift */; };
 		8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */; };
 		8203E7C47E0FF9185503BD47 /* BridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B76D46C558BE296D732DE958 /* BridgeProtocol.swift */; };
 		84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */; };
 		851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */; };
+		9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */; };
 		9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */; };
 		AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F25D8E351B8F533ADD42379 /* Models.swift */; };
 		B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */; };
 		B986C6114FE3410766E7B75F /* WidgetViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */; };
+		C337CCD0E293BFA434C14C67 /* RunResultHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */; };
+		CAF27A59FDAC92D5B2160164 /* RunResultHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */; };
 		CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */; };
 		CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */; };
 		D3EC2082D7E2FB2C0419B61D /* BridgeRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */; };
@@ -63,6 +67,8 @@
 		3EF41C3133082121F9E0B731 /* ChatURLTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURLTests.swift; sourceTree = "<group>"; };
 		45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
 		491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowCLI.swift; sourceTree = "<group>"; };
+		4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffTests.swift; sourceTree = "<group>"; };
+		552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffStore.swift; sourceTree = "<group>"; };
 		5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURL.swift; sourceTree = "<group>"; };
 		5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMap.swift; sourceTree = "<group>"; };
 		74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStoreTests.swift; sourceTree = "<group>"; };
@@ -76,10 +82,12 @@
 		9D73842CA3AF2CA8E0D3A625 /* AiflowMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AiflowMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20AB672BC3C14C19EFDCD06 /* BridgeToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeToken.swift; sourceTree = "<group>"; };
 		B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLDetector.swift; sourceTree = "<group>"; };
+		B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoff.swift; sourceTree = "<group>"; };
 		B76D46C558BE296D732DE958 /* BridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeProtocol.swift; sourceTree = "<group>"; };
 		BCE999D706097DEEC4AFADD5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowCLITests.swift; sourceTree = "<group>"; };
 		DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViewModel.swift; sourceTree = "<group>"; };
+		E99E943AAA647F203E588457 /* RunResultHandoffStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffStoreTests.swift; sourceTree = "<group>"; };
 		FFCF38B5F1DF8D04C39313C8 /* BridgeIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -117,6 +125,8 @@
 				30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */,
 				30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */,
 				985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */,
+				E99E943AAA647F203E588457 /* RunResultHandoffStoreTests.swift */,
+				4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */,
 				74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */,
 			);
 			path = AiflowMenuBarTests;
@@ -140,6 +150,8 @@
 				24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */,
 				7F25D8E351B8F533ADD42379 /* Models.swift */,
 				97E859A74BB6436A2CB1B244 /* NotificationManager.swift */,
+				B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */,
+				552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */,
 				077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */,
 				DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */,
 			);
@@ -240,6 +252,8 @@
 				9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */,
 				AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */,
 				05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */,
+				C337CCD0E293BFA434C14C67 /* RunResultHandoff.swift in Sources */,
+				9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */,
 				074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */,
 				B986C6114FE3410766E7B75F /* WidgetViewModel.swift in Sources */,
 			);
@@ -261,6 +275,8 @@
 				6FB9FA15CA324F0DAEC9A01C /* GitProjectValidationTests.swift in Sources */,
 				8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */,
 				55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */,
+				7F1AF36094AC29BD0CF8B579 /* RunResultHandoffStoreTests.swift in Sources */,
+				CAF27A59FDAC92D5B2160164 /* RunResultHandoffTests.swift in Sources */,
 				796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

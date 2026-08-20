@@ -112,6 +112,24 @@ The bridge is transport only. `WidgetViewModel` stays the source of truth:
 - Malformed or unknown frames are dropped, and losing the client never affects a running
   Codex session. A reconnecting client is sent a snapshot and rebuilds its UI from it.
 
+## Result handoff outbox
+
+Aiflow now persists one immutable terminal result envelope per run when a ChatGPT conversation is
+detected at dispatch time.
+
+- The target conversation is captured once when dispatch starts and normalized with
+  `ChatURL.normalize(...)`.
+- Each run writes at most one file at
+  `~/Library/Application Support/Aiflow/handoffs/pending/<runId>.json`.
+- The envelope stores run metadata (`project`, `sourceChat`, `execution`), final Codex result,
+  and UTC ISO-8601 `startedAt`/`finishedAt`.
+- Outcomes are `completed`, `failed`, or `cancelled`.
+- Official worker envelopes include optional `execution.codexConversationId` and
+  `execution.codexTurnId` when reported.
+- Legacy worker envelopes leave those IDs absent by design.
+- The original clipboard prompt is intentionally not persisted.
+- PR #10 only creates the durable outbox; no handoff transport to ChatGPT occurs yet.
+
 ## Build, test, regenerate
 
 ```sh
