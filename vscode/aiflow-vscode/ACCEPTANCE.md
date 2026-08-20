@@ -5,6 +5,13 @@ prompt, model, and reasoning effort Aiflow asked for.
 
 Use a disposable repository. Nothing here should be run against real work.
 
+Tested against **`openai.chatgpt@26.814.41407`**. Newer versions are unverified: `26.818.21641`
+bootstraps but rejects `thread-follower-start-turn`.
+
+Runs 2+ in the same workspace should show **no** `AIFLOW SESSION BOOTSTRAP` turn — the
+conversation is reused while its owner is alive. Reloading VS Code drops that mapping (it is in
+memory only), so the next run bootstraps once more.
+
 ## Setup
 
 ```sh

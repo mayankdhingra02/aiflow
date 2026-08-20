@@ -621,3 +621,87 @@ final class BridgeWorkerRoutingTests: XCTestCase {
         XCTAssertEqual(toWorker.message, "hello")
     }
 }
+
+/// Restarting a server object must not leave its previous worker designation behind.
+@MainActor
+final class BridgeWorkerLifecycleTests: XCTestCase {
+    private let token = BridgeToken.generate()
+
+    private func authenticate(_ client: AuthTestClient, announceWorker: Bool) async throws {
+        _ = try await client.nextEvent(ofType: .hello)
+        client.send(#"{"type":"auth","token":"\#(token)"}"#)
+        _ = try await client.nextEvent(ofType: .snapshot)
+        if announceWorker {
+            client.send(#"{"type":"worker_available","workerState":"ready"}"#)
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func testStopClearsTheWorkerDesignation() async throws {
+        let controller = MinimalController()
+        let server = AiflowBridgeServer(port: UInt16.random(in: 49_800...49_890), token: token)
+        server.controller = controller
+        XCTAssertTrue(server.start())
+
+        let first = try AuthTestClient(port: server.boundPort)
+        try await authenticate(first, announceWorker: true)
+        XCTAssertTrue(server.hasDesignatedWorker)
+
+        first.close()
+        server.stop()
+
+        XCTAssertFalse(
+            server.hasDesignatedWorker,
+            "a stopped server must not still believe it has a worker")
+    }
+
+    /// The reachable case: the designated worker leaves and a different companion takes over.
+    ///
+    /// This is what the stale-key bug would have blocked. A listener restart is deliberately
+    /// not exercised: `start()` returns once the listener is created, but binding is
+    /// asynchronous, so rebinding a just-cancelled port is racy — and the app never stops its
+    /// server, which lives for the process.
+    func testAnotherCompanionCanBeDesignatedAfterTheWorkerLeaves() async throws {
+        let controller = MinimalController()
+        let server = AiflowBridgeServer(port: UInt16.random(in: 49_800...49_890), token: token)
+        server.controller = controller
+        XCTAssertTrue(server.start())
+        defer { server.stop() }
+
+        let first = try AuthTestClient(port: server.boundPort)
+        try await authenticate(first, announceWorker: true)
+        XCTAssertTrue(server.hasDesignatedWorker)
+
+        first.close()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(server.hasDesignatedWorker, "a departing worker releases the role")
+
+        let second = try AuthTestClient(port: server.boundPort)
+        defer { second.close() }
+        try await authenticate(second, announceWorker: true)
+
+        XCTAssertTrue(
+            server.hasDesignatedWorker,
+            "the replacement companion must be able to take the role")
+
+        // And it really is the one that receives execution.
+        XCTAssertTrue(
+            server.sendToWorker(
+                .executeRun(
+                    runId: "run-1",
+                    project: SavedProject(name: "demo", path: "/repos/demo"),
+                    prompt: "p", model: "terra", effort: "low")))
+        let delivered = try await second.nextEvent(ofType: .executeRun)
+        XCTAssertEqual(delivered.runId, "run-1")
+    }
+}
+
+@MainActor
+private final class MinimalController: BridgeController {
+    func handleBridgeCommand(_ command: BridgeCommand) {}
+    func bridgeSnapshot() -> BridgeEvent {
+        var event = BridgeEvent(type: .snapshot)
+        event.runState = "ready"
+        return event
+    }
+}

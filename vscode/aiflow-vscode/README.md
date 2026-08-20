@@ -50,8 +50,14 @@ newer request.
 ## Official Codex worker
 
 > **Status: opt-in, off by default.** Enable with `aiflow.officialWorker.enabled`.
-> Low-level fresh-thread bootstrap and follower execution are proven; final app-level acceptance
-> is still pending.
+>
+> App-level acceptance has **passed** against `openai.chatgpt@26.814.41407`: exact prompt
+> delivery, Sol/Low settings, normal completion, real-turn cancellation, and conversation reuse
+> across runs.
+>
+> **Version compatibility is not universal.** `26.814.41407` is the tested version.
+> `26.818.21641` bootstraps but rejects `thread-follower-start-turn`; that delta is deferred to
+> a follow-up. Treat other versions as unverified — this is why the worker stays opt-in.
 
 Requires the official **`openai.chatgpt`** extension to be installed. The companion activates
 it if needed; it never bundles or redistributes it.

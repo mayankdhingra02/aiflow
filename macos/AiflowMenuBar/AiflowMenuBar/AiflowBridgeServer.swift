@@ -134,6 +134,11 @@ final class AiflowBridgeServer: @unchecked Sendable {
         lock.lock()
         let openConnections = Array(connections.values)
         connections.removeAll()
+        // Retire the worker designation with the connections it referred to. `workerKey` is an
+        // ObjectIdentifier, i.e. an address: leaving it set after its Connection is freed both
+        // blocks the next companion from being designated and risks a future Connection
+        // allocated at the same address being mistaken for the designated worker.
+        workerKey = nil
         listener?.cancel()
         listener = nil
         lock.unlock()
