@@ -91,6 +91,9 @@ Never run both for one Aiflow run. Fallback must be visible, never silent ambigu
 
 - Aiflow joins the official extension's IPC router as a follower. It never modifies, patches,
   or redistributes the official extension.
+- Private IPC compatibility is exact-version allowlisted. Unsupported or unknown official
+  extension versions fail closed before IPC or synthetic bootstrap; never "try and see" with an
+  unapproved version because bootstrap itself costs a model turn.
 - A cached conversation is reused only after owner revalidation. Otherwise the companion creates
   a fresh official conversation through a nonce-correlated synthetic bootstrap and accepts only
   a brand-new session candidate containing that bootstrap nonce. It never adopts an arbitrary

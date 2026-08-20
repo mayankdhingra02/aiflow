@@ -5,6 +5,10 @@ import { defaultSessionsRoot, TurnResult } from './sessionWatcher';
 import { OFFICIAL_EXTENSION_ID } from './threadResolver';
 import { bootstrapFreshThread, canonicalPath, productionBootstrapDeps } from './bootstrapper';
 import { ConversationCache } from './conversationCache';
+import {
+    checkCodexExtensionVersion,
+    CodexExtensionCompatibility
+} from './versionCompatibility';
 
 /**
  * Glue between VS Code and the official Codex worker.
@@ -15,6 +19,8 @@ import { ConversationCache } from './conversationCache';
 
 export interface OfficialCodexStatus {
     extensionInstalled: boolean;
+    extensionVersion?: string;
+    extensionVersionSupported: boolean;
     ipcConnected: boolean;
     detail?: string;
 }
@@ -68,11 +74,25 @@ export class OfficialCodexHost {
         return vscode.extensions.getExtension(OFFICIAL_EXTENSION_ID) !== undefined;
     }
 
+    get installedExtensionVersion(): string | undefined {
+        const extension = vscode.extensions.getExtension(OFFICIAL_EXTENSION_ID);
+        const version = extension?.packageJSON?.version;
+        return typeof version === 'string' ? version : undefined;
+    }
+
+    get extensionCompatibility(): CodexExtensionCompatibility {
+        return checkCodexExtensionVersion(this.installedExtensionVersion);
+    }
+
     status(): OfficialCodexStatus {
+        const extension = vscode.extensions.getExtension(OFFICIAL_EXTENSION_ID);
+        const compatibility = checkCodexExtensionVersion(extension?.packageJSON?.version);
         return {
-            extensionInstalled: this.isExtensionInstalled,
+            extensionInstalled: extension !== undefined,
+            extensionVersion: compatibility.version,
+            extensionVersionSupported: extension !== undefined && compatibility.supported,
             ipcConnected: this.ipc?.isConnected ?? false,
-            detail: this.lastDetail
+            detail: extension && !compatibility.supported ? compatibility.detail : this.lastDetail
         };
     }
 
@@ -86,6 +106,11 @@ export class OfficialCodexHost {
         const extension = vscode.extensions.getExtension(OFFICIAL_EXTENSION_ID);
         if (!extension) {
             this.lastDetail = `${OFFICIAL_EXTENSION_ID} is not installed`;
+            throw new WorkerError('extension_unavailable', this.lastDetail);
+        }
+        const compatibility = checkCodexExtensionVersion(extension.packageJSON?.version);
+        if (!compatibility.supported) {
+            this.lastDetail = compatibility.detail;
             throw new WorkerError('extension_unavailable', this.lastDetail);
         }
         if (!extension.isActive) {
