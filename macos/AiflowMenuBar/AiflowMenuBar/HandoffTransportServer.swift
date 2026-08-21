@@ -428,7 +428,9 @@ final class HandoffTransportServer: @unchecked Sendable {
                 code = "handoff_not_found"
 
             case .conflictingExistingRecord,
-                 .conflictingDeliveredRecord:
+                 .conflictingDeliveredRecord,
+                 .unreadableDeliveredRecord,
+                 .invalidDeliveredRecord:
                 code = "handoff_conflict"
             }
 

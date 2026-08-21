@@ -5,6 +5,7 @@ enum ChatGPTReviewStoreError: Error, Equatable {
     case invalidReview
     case conflictingExistingRecord
     case unreadableExistingRecord
+    case storeIntegrityFailure
 }
 
 /// Durable pending review inbox. Each run owns at most one immutable record.
@@ -62,8 +63,56 @@ final class ChatGPTReviewStore {
         return load(url: recordURL(runId: runId))
     }
 
+    /// Execution-sensitive reads must distinguish absent evidence from corrupt evidence.
+    func validatedReview(runId: String) throws -> ChatGPTReview? {
+        guard UUID(uuidString: runId) != nil else {
+            throw ChatGPTReviewStoreError.invalidRunId
+        }
+        let url = recordURL(runId: runId)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try loadValidated(url: url, expectedRunId: runId)
+    }
+
+    /// Enumerates the immutable inbox without silently dropping an unreadable review.
+    func allReviews() throws -> [ChatGPTReview] {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory)
+        else { return [] }
+        guard isDirectory.boolValue else {
+            throw ChatGPTReviewStoreError.storeIntegrityFailure
+        }
+
+        let urls: [URL]
+        do {
+            urls = try FileManager.default.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw ChatGPTReviewStoreError.storeIntegrityFailure
+        }
+
+        return try urls
+            .filter { $0.pathExtension.lowercased() == "json" }
+            .map { url in
+                let runId = url.deletingPathExtension().lastPathComponent
+                guard UUID(uuidString: runId) != nil else {
+                    throw ChatGPTReviewStoreError.storeIntegrityFailure
+                }
+                return try loadValidated(url: url, expectedRunId: runId)
+            }
+            .sorted {
+                $0.capturedAt == $1.capturedAt
+                    ? $0.runId < $1.runId
+                    : $0.capturedAt < $1.capturedAt
+            }
+    }
+
     private func isValid(_ review: ChatGPTReview) -> Bool {
-        !review.conversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        review.schemaVersion == ChatGPTReview.currentSchemaVersion
+            && UUID(uuidString: review.runId) != nil
+            && !review.conversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !review.sourceChatURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !review.assistantMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && review.assistantMessage.lengthOfBytes(using: .utf8)
@@ -102,6 +151,19 @@ final class ChatGPTReviewStore {
     private func load(url: URL) -> ChatGPTReview? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? decoder().decode(ChatGPTReview.self, from: data)
+    }
+
+    private func loadValidated(url: URL, expectedRunId: String) throws -> ChatGPTReview {
+        let review: ChatGPTReview
+        do {
+            review = try decoder().decode(ChatGPTReview.self, from: Data(contentsOf: url))
+        } catch {
+            throw ChatGPTReviewStoreError.unreadableExistingRecord
+        }
+        guard review.runId == expectedRunId, isValid(review) else {
+            throw ChatGPTReviewStoreError.storeIntegrityFailure
+        }
+        return review
     }
 
     private func encoder() -> JSONEncoder {
