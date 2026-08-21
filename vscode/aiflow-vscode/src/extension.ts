@@ -7,6 +7,7 @@ import {
     admitRun,
     initialState,
     parseExecutionRequest,
+    parseFollowupExecutionRequest,
     reduce,
     statusLabel,
     terminalEvent
@@ -63,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     /** The run the official worker is currently executing, if any. */
     let activeWorkerRunId: string | undefined;
+    const completedWorkerRunIds = new Set<string>();
 
     /**
      * Executes one Aiflow run through the official Codex extension.
@@ -71,9 +73,14 @@ export function activate(context: vscode.ExtensionContext): void {
      * refused rather than silently running two Codex turns for one Aiflow job.
      */
     const executeRun = async (event: BridgeEvent): Promise<void> => {
-        const request = parseExecutionRequest(event);
+        const request = event.type === 'execute_followup'
+            ? parseFollowupExecutionRequest(event)
+            : parseExecutionRequest(event);
         if (!request) {
             return; // malformed execution requests are ignored, never guessed at
+        }
+        if (completedWorkerRunIds.has(request.runId)) {
+            return;
         }
         switch (admitRun(activeWorkerRunId, request.runId)) {
             case 'ignore-duplicate':
@@ -134,6 +141,10 @@ export function activate(context: vscode.ExtensionContext): void {
             render();
         } finally {
             activeWorkerRunId = undefined;
+            completedWorkerRunIds.add(request.runId);
+            if (completedWorkerRunIds.size > 32) {
+                completedWorkerRunIds.delete(completedWorkerRunIds.values().next().value as string);
+            }
         }
     };
 
@@ -196,7 +207,7 @@ export function activate(context: vscode.ExtensionContext): void {
             void openFile(event.path);
             return;
         }
-        if (event.type === 'execute_run') {
+        if (event.type === 'execute_run' || event.type === 'execute_followup') {
             void executeRun(event);
             return;
         }

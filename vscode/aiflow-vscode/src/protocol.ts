@@ -38,6 +38,7 @@ export type BridgeEventType =
      * travels app -> companion over the authenticated bridge.
      */
     | 'execute_run'
+    | 'execute_followup'
     /** v2: interrupt the official turn serving this exact run. */
     | 'cancel_run';
 
@@ -98,6 +99,8 @@ export interface BridgeEvent {
     workspacePath?: string;
     /** The exact prompt text, submitted to Codex verbatim. */
     prompt?: string;
+    parentRunId?: string;
+    conversationId?: string;
 }
 
 export interface BridgeCommand {
@@ -129,6 +132,7 @@ const EVENT_TYPES: ReadonlySet<string> = new Set<BridgeEventType>([
     'file_open',
     'file_changed',
     'execute_run',
+    'execute_followup',
     'cancel_run'
 ]);
 
@@ -403,6 +407,7 @@ export interface ExecutionRequest {
     prompt: string;
     model?: string;
     effort?: string;
+    conversationId?: string;
 }
 
 /**
@@ -426,6 +431,17 @@ export function parseExecutionRequest(event: BridgeEvent): ExecutionRequest | un
         return undefined; // only absolute local paths
     }
     return { runId, workspacePath, prompt, model: event.model, effort: event.effort };
+}
+
+export function parseFollowupExecutionRequest(event: BridgeEvent): ExecutionRequest | undefined {
+    if (event.type !== 'execute_followup') return undefined;
+    const request = parseExecutionRequest({ ...event, type: 'execute_run' });
+    const conversationId = (event.conversationId ?? '').trim();
+    const parentRunId = (event.parentRunId ?? '').trim();
+    if (!request || !conversationId || !parentRunId || conversationId.startsWith('client-new-thread:')) {
+        return undefined;
+    }
+    return { ...request, conversationId };
 }
 
 /** What to do with an incoming `execute_run`, given the run already in flight. */

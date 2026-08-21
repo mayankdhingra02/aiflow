@@ -73,13 +73,47 @@ export function buildHandoffMessage(handoff) {
     resultText,
     "",
     "Review this Codex result in the context of our current task.",
-    "If more implementation work is needed, give me the exact next instruction to send to Codex."
+    "If more implementation work is needed, respond using exactly this format:",
+    "",
+    "# Implementation Review",
+    "## Verdict",
+    "SHIP",
+    "or",
+    "CHANGES_REQUESTED",
+    "",
+    "For CHANGES_REQUESTED, add exactly one section:",
+    "## Codex Instruction",
+    "<one exact, bounded instruction for Codex>"
   ].join("\n");
 }
 
 export function reviewMessageIsBounded(message, maximumBytes = 32 * 1024) {
   const text = String(message ?? "");
   return text.trim().length > 0 && new TextEncoder().encode(text).length <= maximumBytes;
+}
+
+export function assistantAfterExactSentinel(messages, sentinel) {
+  const expected = normalizeReviewText(sentinel);
+  if (!expected) return null;
+
+  const matches = messages.filter((message) =>
+    message?.role === "user" &&
+    normalizeReviewText(message.text).startsWith(expected)
+  );
+
+  if (matches.length !== 1) return null;
+
+  const sentinelIndex = messages.indexOf(matches[0]);
+  for (const message of messages.slice(sentinelIndex + 1)) {
+    if (message?.role === "user") return null;
+    if (message?.role === "assistant") return message;
+  }
+
+  return null;
+}
+
+function normalizeReviewText(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
 export function buildReviewCommand(review) {

@@ -42,13 +42,7 @@ function armReviewObservation(
 
   if (conversationIdFromLocation() !== message.conversationId) return;
 
-  const existingAssistants = new Set(
-    assistantMessages()
-  );
-
   let active = options.active !== false;
-  const requireNewAssistant =
-    options.requireNewAssistant === true;
 
   const deadline = Date.now() + 180000;
   let previousText = "";
@@ -64,16 +58,7 @@ function armReviewObservation(
       return;
     }
 
-    const assistant =
-      requireNewAssistant
-        ? firstNewAssistant(
-            existingAssistants
-          )
-        : assistantResponseAfterSentinel(
-            message.sentinel
-          ) || firstNewAssistant(
-            existingAssistants
-          );
+    const assistant = assistantResponseAfterSentinel(message.sentinel);
     const text = normalizeText(assistant?.innerText || assistant?.textContent || "");
     if (!assistant || !text || conversationIsBusy()) {
       previousText = "";
@@ -119,20 +104,20 @@ function cancelReviewObservation(runId) {
 
 function assistantResponseAfterSentinel(sentinel) {
   const messages = messageElements();
-  const sentinelIndex = messages.findIndex(element =>
+  const matches = messages.filter(element =>
     element.getAttribute("data-message-author-role") === "user" &&
-    normalizeText(element.innerText || element.textContent || "").includes(normalizeText(sentinel))
+    normalizeText(element.innerText || element.textContent || "").startsWith(normalizeText(sentinel))
   );
-  if (sentinelIndex < 0) return null;
-  return messages.slice(sentinelIndex + 1).find(element =>
-    element.getAttribute("data-message-author-role") === "assistant"
-  ) || null;
-}
+  if (matches.length !== 1) return null;
 
-function firstNewAssistant(existingAssistants) {
-  return assistantMessages().find(
-    element => !existingAssistants.has(element)
-  ) || null;
+  const sentinelIndex = messages.indexOf(matches[0]);
+  for (const element of messages.slice(sentinelIndex + 1)) {
+    const role = element.getAttribute("data-message-author-role");
+    if (role === "user") return null;
+    if (role === "assistant") return element;
+  }
+
+  return null;
 }
 
 function messageElements() {
@@ -300,8 +285,7 @@ async function deliver(message) {
       sentinel
     },
     {
-      active: false,
-      requireNewAssistant: true
+      active: false
     }
   );
 

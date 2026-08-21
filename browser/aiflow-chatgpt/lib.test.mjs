@@ -6,7 +6,8 @@ import {
   conversationIdFromURL,
   buildHandoffMessage,
   buildReviewCommand,
-  reviewMessageIsBounded
+  reviewMessageIsBounded,
+  assistantAfterExactSentinel
 } from "./lib.js";
 
 test(
@@ -49,6 +50,97 @@ test("builds a typed review transport command", () => {
       assistantMessage: "Review complete."
     }
   );
+});
+
+test("correlates only the unique exact sentinel to its following assistant", () => {
+  const sentinel = "[Aiflow result run-123]";
+  const assistant = { role: "assistant", text: "PR12_OK" };
+  assert.deepEqual(
+    assistantAfterExactSentinel([
+      { role: "assistant", text: "old history" },
+      { role: "user", text: `${sentinel} details` },
+      assistant
+    ], sentinel),
+    assistant
+  );
+});
+
+test("does not use an old assistant remounted after the baseline", () => {
+  const sentinel = "[Aiflow result run-123]";
+  assert.equal(
+    assistantAfterExactSentinel([
+      { role: "assistant", text: "old history" },
+      { role: "user", text: "unrelated user message" },
+      { role: "assistant", text: "old history" },
+      { role: "user", text: `${sentinel} details` }
+    ], sentinel),
+    null
+  );
+});
+
+test("waits when the exact sentinel has no assistant yet", () => {
+  assert.equal(
+    assistantAfterExactSentinel(
+      [{ role: "user", text: "[Aiflow result run-123] details" }],
+      "[Aiflow result run-123]"
+    ),
+    null
+  );
+});
+
+test("accepts an initially empty assistant placeholder", () => {
+  const placeholder = { role: "assistant", text: "" };
+  assert.deepEqual(
+    assistantAfterExactSentinel([
+      { role: "user", text: "[Aiflow result run-123] details" },
+      placeholder
+    ], "[Aiflow result run-123]"),
+    placeholder
+  );
+});
+
+test("rejects a partial prefix without the exact run sentinel", () => {
+  assert.equal(
+    assistantAfterExactSentinel([
+      { role: "user", text: "[Aiflow result run-12] details" },
+      { role: "assistant", text: "wrong" }
+    ], "[Aiflow result run-123]"),
+    null
+  );
+});
+
+test("rejects duplicate matching sentinels", () => {
+  assert.equal(
+    assistantAfterExactSentinel([
+      { role: "user", text: "[Aiflow result run-123] first" },
+      { role: "assistant", text: "first" },
+      { role: "user", text: "[Aiflow result run-123] duplicate" },
+      { role: "assistant", text: "second" }
+    ], "[Aiflow result run-123]"),
+    null
+  );
+});
+
+test("rejects an intervening user message", () => {
+  assert.equal(
+    assistantAfterExactSentinel([
+      { role: "user", text: "[Aiflow result run-123] details" },
+      { role: "user", text: "another request" },
+      { role: "assistant", text: "unrelated" }
+    ], "[Aiflow result run-123]"),
+    null
+  );
+});
+
+test("keeps observers for different sentinels isolated", () => {
+  const messages = [
+    { role: "user", text: "[Aiflow result run-a] details" },
+    { role: "assistant", text: "review-a" },
+    { role: "user", text: "[Aiflow result run-b] details" },
+    { role: "assistant", text: "review-b" }
+  ];
+  assert.equal(assistantAfterExactSentinel(messages, "[Aiflow result run-a]").text, "review-a");
+  assert.equal(assistantAfterExactSentinel(messages, "[Aiflow result run-b]").text, "review-b");
 });
 
 test(
@@ -100,8 +192,10 @@ test(
 
     assert.match(
       text,
-      /exact next instruction/
+      /# Implementation Review/
     );
+    assert.match(text, /## Verdict/);
+    assert.match(text, /## Codex Instruction/);
   }
 );
 

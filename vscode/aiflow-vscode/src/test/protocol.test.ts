@@ -9,6 +9,7 @@ import {
     LineBuffer,
     admitRun,
     parseExecutionRequest,
+    parseFollowupExecutionRequest,
     encodeCommand,
     initialState,
     parseEvent,
@@ -380,8 +381,25 @@ test('only an execute_run event yields an execution request', () => {
     );
 });
 
-test('execute_run and cancel_run parse as recognised events', () => {
+test('worker execution events parse as recognised events', () => {
     assert.equal(parseEvent('{"type":"execute_run","runId":"r"}')?.type, 'execute_run');
+    const followup = parseEvent(JSON.stringify({
+        type: 'execute_followup',
+        runId: 'followup-run',
+        parentRunId: 'source-run',
+        workspacePath: '/repos/demo',
+        conversationId: 'codex-conversation',
+        prompt: 'Fix the review finding.'
+    }));
+    assert.ok(followup);
+    assert.deepEqual(parseFollowupExecutionRequest(followup), {
+        runId: 'followup-run',
+        workspacePath: '/repos/demo',
+        conversationId: 'codex-conversation',
+        prompt: 'Fix the review finding.',
+        model: undefined,
+        effort: undefined
+    });
     assert.equal(parseEvent('{"type":"cancel_run","runId":"r"}')?.type, 'cancel_run');
 });
 
