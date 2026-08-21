@@ -24,6 +24,10 @@ struct AiflowAttentionPreferences: Equatable {
     private static let mutedKey = "aiflow.attention.muted"
 }
 
+enum ManualActionCategory: String, Equatable {
+    case question
+}
+
 enum AiflowAttentionEvent: Equatable {
     case codexCompleted(runId: String, projectName: String)
     case codexFailed(runId: String, projectName: String)
@@ -34,6 +38,13 @@ enum AiflowAttentionEvent: Equatable {
     case reviewChangesRequested(sourceRunId: String, projectName: String)
     case reviewManualAttention(sourceRunId: String, projectName: String, reason: String)
     case reviewAutomationBlocked(reason: String)
+    case manualActionRequired(
+        runId: String,
+        projectName: String,
+        category: ManualActionCategory,
+        requestId: String,
+        reason: String
+    )
 
     var identity: String {
         switch self {
@@ -48,6 +59,8 @@ enum AiflowAttentionEvent: Equatable {
             return "review.manual.\(sourceRunId).\(stableIdentifierComponent(reason))"
         case let .reviewAutomationBlocked(reason):
             return "review.blocked.\(stableIdentifierComponent(reason))"
+        case let .manualActionRequired(runId, _, category, requestId, _):
+            return "manual.\(category.rawValue).\(runId).\(requestId)"
         }
     }
 }
@@ -243,6 +256,11 @@ final class NotificationManager: NSObject, NotificationManaging, UNUserNotificat
             send(identifier: identifier, title: "Aiflow — ChatGPT Review", body: "\(bounded(projectName)): \(bounded(reason))")
         case let .reviewAutomationBlocked(reason):
             send(identifier: identifier, title: "Aiflow — Review Automation Paused", body: bounded(reason))
+        case let .manualActionRequired(_, projectName, category, _, reason):
+            let title = category == .question
+                ? "Aiflow — Codex Needs Input"
+                : "Aiflow — Manual Action Required"
+            send(identifier: identifier, title: title, body: "\(bounded(projectName)): \(bounded(reason))")
         }
     }
 

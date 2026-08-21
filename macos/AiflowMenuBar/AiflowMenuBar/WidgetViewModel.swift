@@ -5,6 +5,11 @@ private enum ChatGPTReviewAutomationError: Error {
     case evidenceMismatch(String)
 }
 
+enum ApprovalHandling: String, Equatable {
+    case manual
+    case autoApprove
+}
+
 @MainActor
 final class WidgetViewModel: ObservableObject {
     private static let dismissedReviewWarningsKey = "aiflow.dismissed-review-warnings"
@@ -30,6 +35,7 @@ final class WidgetViewModel: ObservableObject {
     @Published private(set) var reviewAutomationBlocked = false
     @Published private(set) var reviewAutomationBlockReason: String?
     @Published private(set) var attentionPreferences: AiflowAttentionPreferences
+    @Published private(set) var approvalHandling: ApprovalHandling
 
     @Published var selectedModelRole: String {
         didSet { defaults.set(selectedModelRole, forKey: Self.modelKey) }
@@ -51,6 +57,7 @@ final class WidgetViewModel: ObservableObject {
     private let reviewDispatchStore: ChatGPTReviewDispatchStore
     private let now: () -> Date
     private let reviewFollowupSender: ((BridgeEvent) -> Bool)?
+    private let approvalResponseSender: ((ApprovalRequest, Bool) -> Void)?
     private var dismissedReviewWarningIDs: Set<String> = []
     private var manualRecoveryDraft: ManualRecoveryDraft?
 
@@ -104,6 +111,7 @@ final class WidgetViewModel: ObservableObject {
 
     private static let modelKey = "aiflow.model"
     private static let effortKey = "aiflow.effort"
+    private static let approvalHandlingKey = "aiflow.approval-handling"
 
     init(
         cli: AiflowCLI = .shared,
@@ -120,7 +128,8 @@ final class WidgetViewModel: ObservableObject {
         reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
         reviewDispatchStore: ChatGPTReviewDispatchStore = ChatGPTReviewDispatchStore(),
         now: @escaping () -> Date = Date.init,
-        reviewFollowupSender: ((BridgeEvent) -> Bool)? = nil
+        reviewFollowupSender: ((BridgeEvent) -> Bool)? = nil,
+        approvalResponseSender: ((ApprovalRequest, Bool) -> Void)? = nil
     ) {
         self.cli = cli
         self.store = store
@@ -141,6 +150,10 @@ final class WidgetViewModel: ObservableObject {
         self.reviewDispatchStore = reviewDispatchStore
         self.now = now
         self.reviewFollowupSender = reviewFollowupSender
+        self.approvalResponseSender = approvalResponseSender
+        self.approvalHandling = ApprovalHandling(
+            rawValue: defaults.string(forKey: Self.approvalHandlingKey) ?? ""
+        ) ?? .manual
         self.selectedModelRole =
             defaults.string(forKey: Self.modelKey) ?? CodexConfig.defaultModelRole
         self.selectedEffort =
@@ -160,9 +173,22 @@ final class WidgetViewModel: ObservableObject {
     /// applies only to the legacy App Server path, where this app mediates approval requests.
     var approvalDisplayLabel: String {
         if activeWorker == .officialVSCode || (activeWorker == nil && officialWorkerAvailable) {
-            return "Approval: Codex policy"
+            return approvalHandling == .autoApprove
+                ? "Approval: Auto unavailable"
+                : "Approval: Codex policy"
         }
-        return "Approval: Manual"
+        return approvalHandling == .autoApprove ? "Approval: Auto-approve" : "Approval: Manual"
+    }
+
+    var approvalHandlingDescription: String {
+        if activeWorker == .officialVSCode || (activeWorker == nil && officialWorkerAvailable) {
+            return approvalHandling == .autoApprove
+                ? "Auto-approve is unavailable for the official Codex worker."
+                : "Official Codex approval remains user-mediated."
+        }
+        return approvalHandling == .autoApprove
+            ? "Approves legacy Codex permission requests locally. Questions still stop for you."
+            : "Codex permission requests wait for your decision."
     }
 
     var hasPrompt: Bool { !effectivePrompt.isEmpty }
@@ -275,6 +301,11 @@ final class WidgetViewModel: ObservableObject {
         var preferences = attentionPreferences
         preferences.muted = muted
         updateAttentionPreferences(preferences)
+    }
+
+    func setApprovalHandling(_ handling: ApprovalHandling) {
+        approvalHandling = handling
+        defaults.set(handling.rawValue, forKey: Self.approvalHandlingKey)
     }
 
     private func updateAttentionPreferences(_ preferences: AiflowAttentionPreferences) {
@@ -601,9 +632,21 @@ final class WidgetViewModel: ObservableObject {
             emit(.runStatus(runState.bridgeName))
 
         case .approvalRequested(let id, let kind, let summary, let detail, let permissionProfile):
+            if case .cancelling = runState { return }
             let request = ApprovalRequest(
                     id: id, kind: kind, summary: summary, detail: detail,
                     projectName: project.name, permissionProfile: permissionProfile)
+            if shouldAutoApproveLegacyRequest {
+                if case .respondingToRequest = runState {
+                    return  // Never replay or replace an unresolved automatic decision.
+                }
+                if case .waitingForApproval = runState {
+                    return  // Never auto-decide while a manual request remains pending.
+                }
+                runState = .respondingToRequest(request.id)
+                sendApprovalDecision(request, allow: true)
+                return
+            }
             runState = .waitingForApproval(request)
             emit(.approvalRequested(request))
             attention.deliver(.approvalRequired(
@@ -616,9 +659,12 @@ final class WidgetViewModel: ObservableObject {
                 id: id, questions: questions, projectName: project.name)
             runState = .waitingForInput(request)
             emit(.questionRequested(request))
-            attention.deliver(.questionRequired(
+            attention.deliver(.manualActionRequired(
+                runId: attentionRunID(for: project),
+                projectName: project.name,
+                category: .question,
                 requestId: request.id.notificationValue,
-                projectName: project.name
+                reason: "Codex needs your input."
             ))
 
         case .requestResolved(let id):
@@ -691,7 +737,8 @@ final class WidgetViewModel: ObservableObject {
         }
     }
 
-    /// Sends the user's explicit decision. Aiflow never answers an approval on its own.
+    /// Sends the user's explicit decision. Typed legacy auto-approval is handled separately;
+    /// questions and unsupported official-worker requests always remain user-mediated.
     /// The run stays blocked on this exact request until Codex confirms it resolved it.
     func respondToApproval(allow: Bool) {
         guard case .waitingForApproval(let request) = runState, runningProject != nil else {
@@ -699,7 +746,7 @@ final class WidgetViewModel: ObservableObject {
         }
         notifications.removePendingRequest(id: request.id)
         runState = .respondingToRequest(request.id)
-        Task { await client?.respondToApproval(request, allow: allow) }
+        sendApprovalDecision(request, allow: allow)
     }
 
     /// Answers every question in the request, keyed by its exact question id.
@@ -789,6 +836,21 @@ final class WidgetViewModel: ObservableObject {
         activeHandoffContext = nil
         Task { await finishing?.stop() }
         resumePendingReviewDispatches()
+    }
+
+    private var shouldAutoApproveLegacyRequest: Bool {
+        approvalHandling == .autoApprove &&
+            activeWorker == .legacyAppServer &&
+            runningProject != nil &&
+            (approvalResponseSender != nil || client != nil)
+    }
+
+    private func sendApprovalDecision(_ request: ApprovalRequest, allow: Bool) {
+        if let approvalResponseSender {
+            approvalResponseSender(request, allow)
+        } else {
+            Task { await client?.respondToApproval(request, allow: allow) }
+        }
     }
 
     private func clearActiveRunContextAfterTerminalRelease() {
