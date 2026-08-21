@@ -197,12 +197,14 @@ final class BridgeAuthenticationTests: XCTestCase {
             notifications: MuteNotifications()
         )
 
-        server = AiflowBridgeServer(port: UInt16.random(in: 49_920...49_990), token: token)
+        server = AiflowBridgeServer(port: 0, token: token)
         viewModel.attachBridge(server)
+        _ = try await server.waitUntilReady()
     }
 
     override func tearDown() async throws {
         server?.stop()
+        try? await server?.waitUntilStopped()
         try? FileManager.default.removeItem(at: directory)
         defaults.removePersistentDomain(forName: suiteName)
         try await super.tearDown()
@@ -489,12 +491,14 @@ final class BridgeWorkerRoutingTests: XCTestCase {
             validateGit: { .repository(root: $0) },
             notifications: MuteNotifications()
         )
-        server = AiflowBridgeServer(port: UInt16.random(in: 49_600...49_780), token: token)
+        server = AiflowBridgeServer(port: 0, token: token)
         viewModel.attachBridge(server)
+        _ = try await server.waitUntilReady()
     }
 
     override func tearDown() async throws {
         server?.stop()
+        try? await server?.waitUntilStopped()
         try? FileManager.default.removeItem(at: directory)
         defaults.removePersistentDomain(forName: suiteName)
         try await super.tearDown()
@@ -639,9 +643,10 @@ final class BridgeWorkerLifecycleTests: XCTestCase {
 
     func testStopClearsTheWorkerDesignation() async throws {
         let controller = MinimalController()
-        let server = AiflowBridgeServer(port: UInt16.random(in: 49_800...49_890), token: token)
+        let server = AiflowBridgeServer(port: 0, token: token)
         server.controller = controller
         XCTAssertTrue(server.start())
+        _ = try await server.waitUntilReady()
 
         let first = try AuthTestClient(port: server.boundPort)
         try await authenticate(first, announceWorker: true)
@@ -649,6 +654,7 @@ final class BridgeWorkerLifecycleTests: XCTestCase {
 
         first.close()
         server.stop()
+        try await server.waitUntilStopped()
 
         XCTAssertFalse(
             server.hasDesignatedWorker,
@@ -657,15 +663,13 @@ final class BridgeWorkerLifecycleTests: XCTestCase {
 
     /// The reachable case: the designated worker leaves and a different companion takes over.
     ///
-    /// This is what the stale-key bug would have blocked. A listener restart is deliberately
-    /// not exercised: `start()` returns once the listener is created, but binding is
-    /// asynchronous, so rebinding a just-cancelled port is racy — and the app never stops its
-    /// server, which lives for the process.
+    /// This is what the stale-key bug would have blocked.
     func testAnotherCompanionCanBeDesignatedAfterTheWorkerLeaves() async throws {
         let controller = MinimalController()
-        let server = AiflowBridgeServer(port: UInt16.random(in: 49_800...49_890), token: token)
+        let server = AiflowBridgeServer(port: 0, token: token)
         server.controller = controller
         XCTAssertTrue(server.start())
+        _ = try await server.waitUntilReady()
         defer { server.stop() }
 
         let first = try AuthTestClient(port: server.boundPort)

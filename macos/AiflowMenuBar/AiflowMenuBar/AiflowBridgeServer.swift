@@ -24,6 +24,8 @@ final class AiflowBridgeServer: @unchecked Sendable {
     private let port: UInt16
     private let queue = DispatchQueue(label: "aiflow.bridge")
     private var listener: NWListener?
+    private var listenerState: ListenerState = .stopped
+    private var resolvedPort: UInt16?
     private var connections: [ObjectIdentifier: Connection] = [:]
     private let lock = NSLock()
 
@@ -43,13 +45,19 @@ final class AiflowBridgeServer: @unchecked Sendable {
         self.token = token
     }
 
-    /// The port this server was configured with; lets a reconnecting client find it again.
-    var boundPort: UInt16 { port }
+    /// The actual listener endpoint once Network.framework has confirmed that it is ready.
+    /// `port == 0` asks the OS to choose a loopback port, which is useful for isolated tests.
+    var boundPort: UInt16 {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedPort ?? port
+    }
 
     var isListening: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return listener != nil
+        if case .ready = listenerState { return listener != nil }
+        return false
     }
 
     /// True when at least one companion has authenticated — i.e. a viewer is attached.
@@ -100,12 +108,21 @@ final class AiflowBridgeServer: @unchecked Sendable {
     /// without it NWListener would accept connections from any interface.
     @discardableResult
     func start() -> Bool {
-        guard listener == nil else { return true }
+        lock.lock()
+        let existingState = listenerState
+        let hasListener = listener != nil
+        lock.unlock()
+        if hasListener {
+            return existingState != .stopping
+        }
 
         let parameters = NWParameters.tcp
+        let requestedPort: NWEndpoint.Port = port == 0
+            ? .any
+            : NWEndpoint.Port(rawValue: port)!
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(Self.loopbackHost),
-            port: NWEndpoint.Port(rawValue: port)!
+            port: requestedPort
         )
         parameters.allowLocalEndpointReuse = true
 
@@ -114,18 +131,21 @@ final class AiflowBridgeServer: @unchecked Sendable {
             listener.newConnectionHandler = { [weak self] connection in
                 self?.accept(connection)
             }
-            listener.stateUpdateHandler = { [weak self] state in
-                if case .failed(let error) = state {
-                    self?.lastError = error.localizedDescription
-                }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                self?.listenerDidChange(state, listener: listener)
             }
             lock.lock()
             self.listener = listener
+            listenerState = .starting
+            resolvedPort = nil
             lock.unlock()
             listener.start(queue: queue)
             return true
         } catch {
+            lock.lock()
             lastError = error.localizedDescription
+            listenerState = .failed(error.localizedDescription)
+            lock.unlock()
             return false
         }
     }
@@ -139,10 +159,119 @@ final class AiflowBridgeServer: @unchecked Sendable {
         // blocks the next companion from being designated and risks a future Connection
         // allocated at the same address being mistaken for the designated worker.
         workerKey = nil
-        listener?.cancel()
-        listener = nil
+        let listener = listener
+        if listener != nil {
+            listenerState = .stopping
+        } else {
+            listenerState = .stopped
+            resolvedPort = nil
+        }
         lock.unlock()
+        listener?.cancel()
         openConnections.forEach { $0.cancel() }
+    }
+
+    /// Waits for Network.framework to either bind the loopback listener or report why it could
+    /// not. Callers that need to connect immediately should use this instead of assuming that
+    /// `start()` returning means the asynchronous bind has completed.
+    func waitUntilReady(timeout: TimeInterval = 5) async throws -> UInt16 {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let state = currentListenerState()
+
+            switch state {
+            case .ready(let port):
+                return port
+            case .failed(let message):
+                throw AiflowBridgeServerError.listenerFailed(message)
+            case .stopped:
+                throw AiflowBridgeServerError.notStarted
+            case .stopping:
+                throw AiflowBridgeServerError.stopped
+            case .starting:
+                break
+            }
+
+            guard Date() < deadline else {
+                throw AiflowBridgeServerError.readinessTimedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Waits until a cancelled listener has released its endpoint. This is primarily useful to
+    /// callers that need to bind a replacement listener on the same explicit port.
+    func waitUntilStopped(timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let state = currentListenerState()
+
+            switch state {
+            case .stopped, .failed:
+                return
+            case .ready, .starting:
+                throw AiflowBridgeServerError.notStopped
+            case .stopping:
+                guard Date() < deadline else {
+                    throw AiflowBridgeServerError.stopTimedOut
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+    }
+
+    private func listenerDidChange(_ state: NWListener.State, listener: NWListener?) {
+        guard let listener else { return }
+
+        switch state {
+        case .ready:
+            guard let port = listener.port?.rawValue else {
+                recordListenerFailure("listener became ready without a bound port", listener: listener)
+                listener.cancel()
+                return
+            }
+            lock.lock()
+            guard self.listener === listener else {
+                lock.unlock()
+                return
+            }
+            resolvedPort = port
+            listenerState = .ready(port)
+            lock.unlock()
+        case .failed(let error):
+            recordListenerFailure(error.localizedDescription, listener: listener)
+        case .cancelled:
+            lock.lock()
+            guard self.listener === listener else {
+                lock.unlock()
+                return
+            }
+            self.listener = nil
+            resolvedPort = nil
+            listenerState = .stopped
+            lock.unlock()
+        default:
+            break
+        }
+    }
+
+    private func recordListenerFailure(_ message: String, listener: NWListener) {
+        lock.lock()
+        guard self.listener === listener else {
+            lock.unlock()
+            return
+        }
+        lastError = message
+        self.listener = nil
+        resolvedPort = nil
+        listenerState = .failed(message)
+        lock.unlock()
+    }
+
+    private func currentListenerState() -> ListenerState {
+        lock.lock()
+        defer { lock.unlock() }
+        return listenerState
     }
 
     /// Sends an event to every connected client. A send failure only drops that client.
@@ -327,4 +456,21 @@ final class AiflowBridgeServer: @unchecked Sendable {
             }
         }
     }
+
+    private enum ListenerState: Equatable {
+        case stopped
+        case starting
+        case ready(UInt16)
+        case stopping
+        case failed(String)
+    }
+}
+
+enum AiflowBridgeServerError: Error, Equatable {
+    case notStarted
+    case stopped
+    case listenerFailed(String)
+    case readinessTimedOut
+    case notStopped
+    case stopTimedOut
 }

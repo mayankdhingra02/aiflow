@@ -109,20 +109,20 @@ final class BridgeProtocolTests: XCTestCase {
 // MARK: - Server
 
 final class AiflowBridgeServerTests: XCTestCase {
-    /// A high port so a running Aiflow app on 47321 cannot collide with the tests.
-    private func freePort() -> UInt16 { UInt16.random(in: 49_200...49_900) }
-
     /// An explicit test token: never the real one from Application Support.
     private let token = BridgeToken.generate()
 
     private func authLine() -> String { #"{"type":"auth","token":"\#(token)"}"# }
 
-    func testServerBindsToLoopbackOnly() {
-        let server = AiflowBridgeServer(port: freePort(), token: token)
+    func testServerBindsToLoopbackOnly() async throws {
+        let server = AiflowBridgeServer(port: 0, token: token)
         defer { server.stop() }
 
         XCTAssertTrue(server.start())
+        let port = try await server.waitUntilReady()
         XCTAssertTrue(server.isListening)
+        XCTAssertNotEqual(port, 0)
+        XCTAssertEqual(server.boundPort, port)
         XCTAssertEqual(AiflowBridgeServer.loopbackHost, "127.0.0.1")
         XCTAssertNotEqual(AiflowBridgeServer.loopbackHost, "0.0.0.0")
     }
@@ -134,12 +134,12 @@ final class AiflowBridgeServerTests: XCTestCase {
     /// End-to-end over a real loopback socket: connect, receive hello + snapshot, send a
     /// command, and confirm it reaches the controller.
     func testClientReceivesHelloAndSnapshotThenCommandsReachController() async throws {
-        let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port, token: token)
+        let server = AiflowBridgeServer(port: 0, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())
+        let port = try await server.waitUntilReady()
 
         let client = try LoopbackClient(port: port)
         defer { client.close() }
@@ -165,12 +165,12 @@ final class AiflowBridgeServerTests: XCTestCase {
     }
 
     func testBroadcastReachesConnectedClient() async throws {
-        let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port, token: token)
+        let server = AiflowBridgeServer(port: 0, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())
+        let port = try await server.waitUntilReady()
 
         let client = try LoopbackClient(port: port)
         defer { client.close() }
@@ -189,12 +189,12 @@ final class AiflowBridgeServerTests: XCTestCase {
 
     /// Losing the viewer must never disturb the run.
     func testDisconnectionDoesNotMutateRunState() async throws {
-        let port = freePort()
         let controller = await MockController()
-        let server = AiflowBridgeServer(port: port, token: token)
+        let server = AiflowBridgeServer(port: 0, token: token)
         await MainActor.run { server.controller = controller }
         defer { server.stop() }
         XCTAssertTrue(server.start())
+        let port = try await server.waitUntilReady()
 
         let client = try LoopbackClient(port: port)
         _ = try await client.nextLine(timeout: 3)
@@ -207,6 +207,60 @@ final class AiflowBridgeServerTests: XCTestCase {
 
         // Broadcasting with no client attached must be harmless.
         server.broadcast(.runStatus("running"))
+    }
+
+    func testTwoAutomaticServersUseDifferentBoundPorts() async throws {
+        let first = AiflowBridgeServer(port: 0, token: token)
+        let second = AiflowBridgeServer(port: 0, token: token)
+        defer {
+            first.stop()
+            second.stop()
+        }
+
+        XCTAssertTrue(first.start())
+        XCTAssertTrue(second.start())
+        let firstPort = try await first.waitUntilReady()
+        let secondPort = try await second.waitUntilReady()
+
+        XCTAssertNotEqual(firstPort, secondPort)
+    }
+
+    func testListenerFailureIsReportedBeforeAnyClientConnects() async throws {
+        let occupying = AiflowBridgeServer(port: 0, token: token)
+        defer { occupying.stop() }
+        XCTAssertTrue(occupying.start())
+        let occupiedPort = try await occupying.waitUntilReady()
+
+        let contender = AiflowBridgeServer(port: occupiedPort, token: token)
+        defer { contender.stop() }
+
+        if contender.start() {
+            do {
+                _ = try await contender.waitUntilReady()
+                XCTFail("a second listener unexpectedly bound the occupied endpoint")
+            } catch let error as AiflowBridgeServerError {
+                guard case .listenerFailed(let message) = error else {
+                    return XCTFail("expected bind failure, got \(error)")
+                }
+                XCTAssertFalse(message.isEmpty)
+            }
+        } else {
+            XCTAssertFalse(contender.lastError?.isEmpty ?? true)
+        }
+    }
+
+    func testStopReleasesExplicitPortForAReplacementListener() async throws {
+        let first = AiflowBridgeServer(port: 0, token: token)
+        XCTAssertTrue(first.start())
+        let port = try await first.waitUntilReady()
+        first.stop()
+        try await first.waitUntilStopped()
+
+        let replacement = AiflowBridgeServer(port: port, token: token)
+        defer { replacement.stop() }
+        XCTAssertTrue(replacement.start())
+        let replacementPort = try await replacement.waitUntilReady()
+        XCTAssertEqual(replacementPort, port)
     }
 }
 
