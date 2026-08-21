@@ -6,6 +6,7 @@ import XCTest
 final class HandoffTransportServerTests: XCTestCase {
     private var directory: URL!
     private var store: RunResultHandoffStore!
+    private var reviewStore: ChatGPTReviewStore!
     private var server: HandoffTransportServer!
     private var socket: URLSessionWebSocketTask!
     private var token: String!
@@ -32,6 +33,8 @@ final class HandoffTransportServerTests: XCTestCase {
                     )
             )
 
+        reviewStore = ChatGPTReviewStore(directoryURL: directory.appendingPathComponent("reviews"))
+
         token = HandoffToken.generate()
         port = UInt16.random(
             in: 49_200...49_390
@@ -41,6 +44,7 @@ final class HandoffTransportServerTests: XCTestCase {
             HandoffTransportServer(
                 port: port,
                 store: store,
+                reviewStore: reviewStore,
                 token: token
             )
 
@@ -435,6 +439,84 @@ final class HandoffTransportServerTests: XCTestCase {
                 runId: handoff.runId
             )
         )
+    }
+
+    func testAuthenticatedReviewPersistsOnlyAfterDeliveredHandoff() throws {
+        let handoff = sampleHandoff(finishedAt: 1)
+        try store.persist(handoff)
+        _ = try receiveEvent()
+        try send(.auth(token: token))
+        _ = try receiveEvent()
+        try send(.next())
+        _ = try receiveEvent()
+        try send(.delivered(runId: handoff.runId))
+        _ = try receiveEvent()
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "Review complete."))
+        XCTAssertEqual(try receiveEvent().type, .reviewAck)
+        XCTAssertEqual(reviewStore.review(runId: handoff.runId)?.assistantMessage, "Review complete.")
+
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "Review complete."))
+        XCTAssertEqual(try receiveEvent().type, .reviewAck)
+    }
+
+    func testUnauthenticatedReviewCannotPersist() throws {
+        let handoff = sampleHandoff(finishedAt: 1)
+        try store.persist(handoff)
+        _ = try receiveEvent()
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "Review complete."))
+        XCTAssertNil(reviewStore.review(runId: handoff.runId))
+    }
+
+    func testProtocolMismatchReturnsExplicitErrorWithoutAuthenticating() throws {
+        let handoff = sampleHandoff(finishedAt: 1)
+        try store.persist(handoff)
+        XCTAssertEqual(try receiveEvent().type, .hello)
+
+        try send(.auth(token: token, protocolVersion: 1))
+
+        let error = try receiveEvent()
+        XCTAssertEqual(error.type, .error)
+        XCTAssertEqual(error.error, "protocol_incompatible")
+
+        try send(.next())
+        XCTAssertNil(reviewStore.review(runId: handoff.runId))
+    }
+
+    func testMalformedExistingReviewReturnsConflictWithoutOverwrite() throws {
+        let handoff = sampleHandoff(finishedAt: 1)
+        try store.persist(handoff)
+        let reviewURL = reviewStore.directoryURL.appendingPathComponent("\(handoff.runId).json")
+        let malformed = Data("not valid JSON".utf8)
+        try FileManager.default.createDirectory(
+            at: reviewStore.directoryURL,
+            withIntermediateDirectories: true
+        )
+        try malformed.write(to: reviewURL)
+
+        _ = try receiveEvent()
+        try send(.auth(token: token))
+        _ = try receiveEvent()
+        try send(.next())
+        _ = try receiveEvent()
+        try send(.delivered(runId: handoff.runId))
+        _ = try receiveEvent()
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "Review complete."))
+
+        let error = try receiveEvent()
+        XCTAssertEqual(error.type, .error)
+        XCTAssertEqual(error.error, "review_conflict")
+        XCTAssertEqual(try Data(contentsOf: reviewURL), malformed)
+    }
+
+    func testConflictingAndOversizedReviewsFailClosed() throws {
+        let handoff = sampleHandoff(finishedAt: 1)
+        try store.persist(handoff)
+        _ = try receiveEvent(); try send(.auth(token: token)); _ = try receiveEvent(); try send(.next()); _ = try receiveEvent(); try send(.delivered(runId: handoff.runId)); _ = try receiveEvent()
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "first")); _ = try receiveEvent()
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: "second"))
+        XCTAssertEqual(try receiveEvent().error, "review_conflict")
+        try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: String(repeating: "x", count: 33 * 1024)))
+        XCTAssertEqual(try receiveEvent().error, "invalid_review")
     }
 
     private func send(

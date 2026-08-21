@@ -1,9 +1,12 @@
 chrome.runtime.onMessage.addListener(
   (message, sender, sendResponse) => {
-    if (
-      message?.type !==
-      "aiflow-deliver-handoff"
-    ) {
+    if (message?.type === "aiflow-observe-review") {
+      observeReview(message);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type !== "aiflow-deliver-handoff") {
       return;
     }
 
@@ -22,6 +25,132 @@ chrome.runtime.onMessage.addListener(
     return true;
   }
 );
+
+const reviewObservers = new Map();
+
+function observeReview(message) {
+  armReviewObservation(message);
+}
+
+function armReviewObservation(
+  message,
+  options = {}
+) {
+  if (reviewObservers.has(message.runId)) {
+    return false;
+  }
+
+  if (conversationIdFromLocation() !== message.conversationId) return;
+
+  const existingAssistants = new Set(
+    assistantMessages()
+  );
+
+  let active = options.active !== false;
+  const requireNewAssistant =
+    options.requireNewAssistant === true;
+
+  const deadline = Date.now() + 180000;
+  let previousText = "";
+  let stableSince = 0;
+  const timer = setInterval(() => {
+    if (Date.now() > deadline || conversationIdFromLocation() !== message.conversationId) {
+      clearInterval(timer);
+      reviewObservers.delete(message.runId);
+      return;
+    }
+
+    if (!active) {
+      return;
+    }
+
+    const assistant =
+      requireNewAssistant
+        ? firstNewAssistant(
+            existingAssistants
+          )
+        : assistantResponseAfterSentinel(
+            message.sentinel
+          ) || firstNewAssistant(
+            existingAssistants
+          );
+    const text = normalizeText(assistant?.innerText || assistant?.textContent || "");
+    if (!assistant || !text || conversationIsBusy()) {
+      previousText = "";
+      stableSince = 0;
+      return;
+    }
+    if (text !== previousText) {
+      previousText = text;
+      stableSince = Date.now();
+      return;
+    }
+    if (stableSince && Date.now() - stableSince >= 1500) {
+      clearInterval(timer);
+      reviewObservers.delete(message.runId);
+      chrome.runtime.sendMessage({
+        type: "aiflow-review-captured",
+        runId: message.runId,
+        conversationId: message.conversationId,
+        assistantMessage: text
+      });
+    }
+  }, 250);
+  reviewObservers.set(message.runId, {
+    timer,
+    activate() {
+      active = true;
+    }
+  });
+
+  return true;
+}
+
+function activateReviewObservation(runId) {
+  reviewObservers.get(runId)?.activate();
+}
+
+function cancelReviewObservation(runId) {
+  const observer = reviewObservers.get(runId);
+  if (!observer) return;
+  clearInterval(observer.timer);
+  reviewObservers.delete(runId);
+}
+
+function assistantResponseAfterSentinel(sentinel) {
+  const messages = messageElements();
+  const sentinelIndex = messages.findIndex(element =>
+    element.getAttribute("data-message-author-role") === "user" &&
+    normalizeText(element.innerText || element.textContent || "").includes(normalizeText(sentinel))
+  );
+  if (sentinelIndex < 0) return null;
+  return messages.slice(sentinelIndex + 1).find(element =>
+    element.getAttribute("data-message-author-role") === "assistant"
+  ) || null;
+}
+
+function firstNewAssistant(existingAssistants) {
+  return assistantMessages().find(
+    element => !existingAssistants.has(element)
+  ) || null;
+}
+
+function messageElements() {
+  return [
+    ...document.querySelectorAll(
+      "[data-message-author-role]"
+    )
+  ];
+}
+
+function assistantMessages() {
+  return messageElements().filter(
+    element =>
+      element.getAttribute(
+        "data-message-author-role"
+      ) === "assistant"
+  );
+}
 
 async function deliver(message) {
   const currentConversationId =
@@ -159,6 +288,23 @@ async function deliver(message) {
     };
   }
 
+  /*
+   * ChatGPT may insert an empty assistant placeholder synchronously with
+   * Send. Capture the prior assistant baseline before clicking, but keep the
+   * observer inert until the exact sentinel user message is confirmed.
+   */
+  const reviewArmed = armReviewObservation(
+    {
+      runId: message.runId,
+      conversationId: message.conversationId,
+      sentinel
+    },
+    {
+      active: false,
+      requireNewAssistant: true
+    }
+  );
+
   sendButton.click();
 
   const confirmed =
@@ -168,6 +314,10 @@ async function deliver(message) {
     );
 
   if (!confirmed) {
+    if (reviewArmed) {
+      cancelReviewObservation(message.runId);
+    }
+
     return {
       ok: false,
       retryable: false,
@@ -195,7 +345,13 @@ async function deliver(message) {
         "blockedReason"
       ]);
     }
+
+    activateReviewObservation(message.runId);
   } catch {
+    if (reviewArmed) {
+      cancelReviewObservation(message.runId);
+    }
+
     /*
      * The message definitely exists, but we could not persist the receipt.
      * Leave the pre-send block in place and fail closed rather than risking

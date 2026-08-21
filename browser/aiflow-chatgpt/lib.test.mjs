@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
   canonicalChatURL,
   conversationIdFromURL,
-  buildHandoffMessage
+  buildHandoffMessage,
+  buildReviewCommand,
+  reviewMessageIsBounded
 } from "./lib.js";
 
 test(
@@ -25,6 +27,29 @@ test(
     );
   }
 );
+
+test("accepts bounded non-empty review text", () => {
+  assert.equal(reviewMessageIsBounded("Review complete."), true);
+  assert.equal(reviewMessageIsBounded("   "), false);
+  assert.equal(reviewMessageIsBounded("x".repeat(33 * 1024)), false);
+  assert.equal(reviewMessageIsBounded(" ".repeat(33 * 1024) + "x"), false);
+});
+
+test("builds a typed review transport command", () => {
+  assert.deepEqual(
+    buildReviewCommand({
+      runId: "run-123",
+      conversationId: "chat-123",
+      assistantMessage: "Review complete."
+    }),
+    {
+      type: "review",
+      runId: "run-123",
+      conversationId: "chat-123",
+      assistantMessage: "Review complete."
+    }
+  );
+});
 
 test(
   "rejects non-conversation URLs",

@@ -19,6 +19,7 @@
 		32518D4DB3BA7C9A02C30696 /* BridgeAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */; };
 		44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */; };
 		45FC687B867651D7D8D5C9A0 /* HandoffTransportServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7885F26343CD4FF23777CE64 /* HandoffTransportServerTests.swift */; };
+		4FA04480A556FB113481DE4E /* ChatGPTReviewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */; };
 		538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */; };
 		55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */; };
 		5E8266CCB64F25226C88DBB3 /* HandoffTransportProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73029581FB768294AD9CD1AC /* HandoffTransportProtocol.swift */; };
@@ -41,7 +42,9 @@
 		CAF27A59FDAC92D5B2160164 /* RunResultHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */; };
 		CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */; };
 		CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */; };
+		D2248DAF0F8A4A246030249F /* ChatGPTReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */; };
 		D3EC2082D7E2FB2C0419B61D /* BridgeRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */; };
+		D7CE301BEFF0E27583534BB3 /* ChatGPTReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */; };
 		E463D43A86E104AB73C31854 /* HandoffToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = C813CBE56EA3964AB81BBB64 /* HandoffToken.swift */; };
 		E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF41C3133082121F9E0B731 /* ChatURLTests.swift */; };
 		E983B232A72DD590F96D24A7 /* AiflowBridgeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */; };
@@ -60,6 +63,7 @@
 
 /* Begin PBXFileReference section */
 		02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeAuthTests.swift; sourceTree = "<group>"; };
+		06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewStore.swift; sourceTree = "<group>"; };
 		077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStore.swift; sourceTree = "<group>"; };
 		142326CA5A58EB20B76E3633 /* GitRepositoryValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryValidator.swift; sourceTree = "<group>"; };
 		1C985898D56C89DBBB229B0A /* BridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeTests.swift; sourceTree = "<group>"; };
@@ -76,6 +80,7 @@
 		4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffTests.swift; sourceTree = "<group>"; };
 		552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffStore.swift; sourceTree = "<group>"; };
 		5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURL.swift; sourceTree = "<group>"; };
+		5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReview.swift; sourceTree = "<group>"; };
 		5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMap.swift; sourceTree = "<group>"; };
 		60E4490A77F815FE60755AF7 /* HandoffTokenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTokenTests.swift; sourceTree = "<group>"; };
 		6CF2C6552E7305D42D9FD6A4 /* HandoffTransportProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTransportProtocolTests.swift; sourceTree = "<group>"; };
@@ -100,6 +105,7 @@
 		DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViewModel.swift; sourceTree = "<group>"; };
 		E99E943AAA647F203E588457 /* RunResultHandoffStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoffStoreTests.swift; sourceTree = "<group>"; };
 		EE9CD86792EBA6D1298436DA /* HandoffTransportServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTransportServer.swift; sourceTree = "<group>"; };
+		FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewStoreTests.swift; sourceTree = "<group>"; };
 		FFCF38B5F1DF8D04C39313C8 /* BridgeIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -131,6 +137,7 @@
 				FFCF38B5F1DF8D04C39313C8 /* BridgeIntegrationTests.swift */,
 				9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */,
 				1C985898D56C89DBBB229B0A /* BridgeTests.swift */,
+				FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */,
 				1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */,
 				3EF41C3133082121F9E0B731 /* ChatURLTests.swift */,
 				7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */,
@@ -156,6 +163,8 @@
 				B76D46C558BE296D732DE958 /* BridgeProtocol.swift */,
 				B20AB672BC3C14C19EFDCD06 /* BridgeToken.swift */,
 				B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */,
+				5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */,
+				06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */,
 				5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */,
 				5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */,
 				45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */,
@@ -262,6 +271,8 @@
 				8203E7C47E0FF9185503BD47 /* BridgeProtocol.swift in Sources */,
 				07AE064DECC642ECF164A536 /* BridgeToken.swift in Sources */,
 				44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */,
+				D7CE301BEFF0E27583534BB3 /* ChatGPTReview.swift in Sources */,
+				D2248DAF0F8A4A246030249F /* ChatGPTReviewStore.swift in Sources */,
 				84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */,
 				2F83EE22ED408AFE85DBDC19 /* ChatURL.swift in Sources */,
 				851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */,
@@ -290,6 +301,7 @@
 				2290CC1AC00E3093FDCD907B /* BridgeIntegrationTests.swift in Sources */,
 				D3EC2082D7E2FB2C0419B61D /* BridgeRoutingTests.swift in Sources */,
 				21A91E616E5AEFA372AB04F1 /* BridgeTests.swift in Sources */,
+				4FA04480A556FB113481DE4E /* ChatGPTReviewStoreTests.swift in Sources */,
 				CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */,
 				E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */,
 				CCAE8DD02787F773B5FAB574 /* CodexCommandTests.swift in Sources */,

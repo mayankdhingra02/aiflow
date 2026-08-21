@@ -1,10 +1,13 @@
 import {
   canonicalChatURL,
-  buildHandoffMessage
+  buildHandoffMessage,
+  buildReviewCommand,
+  reviewMessageIsBounded
 } from "./lib.js";
 
 const WS_URL =
   "ws://127.0.0.1:47322";
+const PROTOCOL_VERSION = 2;
 
 const RETRY_MS = 4000;
 const EMPTY_POLL_MS = 3000;
@@ -226,9 +229,40 @@ async function handleServerMessage(
 
   switch (event.type) {
     case "hello":
+      if (event.protocolVersion !== PROTOCOL_VERSION) {
+        authenticated = false;
+        authenticationRejected = true;
+        processing = false;
+        stopHeartbeat();
+
+        await chrome.storage.local.set({
+          authError: "protocol_incompatible"
+        });
+
+        const incompatibleSocket = socket;
+        socket = null;
+
+        if (incompatibleSocket) {
+          try {
+            incompatibleSocket.close(
+              1000,
+              "protocol_incompatible"
+            );
+          } catch {
+          }
+        }
+
+        console.error(
+          "Aiflow transport protocol_incompatible:",
+          event.protocolVersion
+        );
+        break;
+      }
+
       send({
         type: "auth",
-        token
+        token,
+        protocolVersion: PROTOCOL_VERSION
       });
       break;
 
@@ -241,6 +275,8 @@ async function handleServerMessage(
       );
 
       startHeartbeat();
+      await resumeReviewObservations();
+      await submitPendingReviews();
       requestNextSoon(50);
       break;
 
@@ -264,7 +300,13 @@ async function handleServerMessage(
         event.runId
       );
 
+      await markDeliveryAcknowledged(event.runId);
+
       requestNextSoon(100);
+      break;
+
+    case "review_ack":
+      await markReviewAcknowledged(event.runId);
       break;
 
     case "error":
@@ -321,6 +363,20 @@ async function handleServerMessage(
       ) {
         requestNextSoon(100);
       }
+
+      if (
+        [
+          "invalid_review",
+          "invalid_run_id",
+          "review_conflict",
+          "conversation_mismatch"
+        ].includes(event.error)
+      ) {
+        await discardReview(
+          event.runId,
+          event.error
+        );
+      }
       break;
 
     default:
@@ -361,6 +417,8 @@ async function handleHandoff(handoff) {
       handoff.runId
     );
 
+    await rememberReviewCorrelation(handoff);
+
     send({
       type: "delivered",
       runId: handoff.runId
@@ -390,6 +448,7 @@ async function handleHandoff(handoff) {
       );
 
     if (result.ok) {
+      await rememberReviewCorrelation(handoff);
       send({
         type: "delivered",
         runId: handoff.runId
@@ -585,6 +644,100 @@ async function removeDeliveryReceipt(
   });
 }
 
+async function rememberReviewCorrelation(handoff) {
+  const stored = await chrome.storage.local.get("reviewCorrelations");
+  const correlations = { ...(stored.reviewCorrelations || {}) };
+  correlations[handoff.runId] = {
+    ...(correlations[handoff.runId] || {}),
+    conversationId: handoff.sourceChat.conversationId,
+    sentinel: `[Aiflow result ${handoff.runId}]`,
+    deliveryAcknowledged: false,
+    reviewAcknowledged: false
+  };
+  await chrome.storage.local.set({ reviewCorrelations: correlations });
+  await requestReviewObservation(handoff.runId, correlations[handoff.runId]);
+}
+
+async function markDeliveryAcknowledged(runId) {
+  if (!runId) return;
+  const { reviewCorrelations = {} } = await chrome.storage.local.get("reviewCorrelations");
+  if (!reviewCorrelations[runId]) return;
+  reviewCorrelations[runId].deliveryAcknowledged = true;
+  await chrome.storage.local.set({ reviewCorrelations });
+}
+
+async function markReviewAcknowledged(runId) {
+  if (!runId) return;
+  const stored = await chrome.storage.local.get(["reviewCorrelations", "pendingReviews"]);
+  const correlations = { ...(stored.reviewCorrelations || {}) };
+  delete correlations[runId];
+  const pendingReviews = { ...(stored.pendingReviews || {}) };
+  delete pendingReviews[runId];
+  await chrome.storage.local.set({ reviewCorrelations: correlations, pendingReviews });
+}
+
+async function discardReview(runId, reason) {
+  if (!runId) return;
+  const stored = await chrome.storage.local.get(["reviewCorrelations", "pendingReviews"]);
+  const correlations = { ...(stored.reviewCorrelations || {}) };
+  const pendingReviews = { ...(stored.pendingReviews || {}) };
+  delete correlations[runId];
+  delete pendingReviews[runId];
+  await chrome.storage.local.set({ reviewCorrelations: correlations, pendingReviews });
+  console.warn("Aiflow discarded terminal review evidence:", reason, runId);
+}
+
+async function resumeReviewObservations() {
+  const { reviewCorrelations = {} } = await chrome.storage.local.get("reviewCorrelations");
+  await Promise.all(Object.entries(reviewCorrelations).map(([runId, correlation]) =>
+    correlation.reviewAcknowledged ? null : requestReviewObservation(runId, correlation)
+  ));
+}
+
+async function requestReviewObservation(runId, correlation) {
+  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+  const target = `https://chatgpt.com/c/${correlation.conversationId}`;
+  const tab = tabs.find(candidate => canonicalChatURL(candidate.url) === target);
+  if (!tab?.id) return;
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "aiflow-observe-review",
+      runId,
+      conversationId: correlation.conversationId,
+      sentinel: correlation.sentinel
+    });
+  } catch {
+  }
+}
+
+async function submitPendingReviews() {
+  if (!authenticated) return;
+  const { pendingReviews = {} } = await chrome.storage.local.get("pendingReviews");
+  for (const review of Object.values(pendingReviews)) sendReview(review);
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "aiflow-review-captured") return;
+  chrome.storage.local.get("reviewCorrelations").then(async ({ reviewCorrelations = {} }) => {
+    const correlation = reviewCorrelations[message.runId];
+    if (!correlation || correlation.conversationId !== message.conversationId || correlation.reviewAcknowledged) {
+      sendResponse({ ok: false });
+      return;
+    }
+    if (!reviewMessageIsBounded(message.assistantMessage)) {
+      console.warn("Aiflow discarded invalid captured review:", message.runId);
+      sendResponse({ ok: false });
+      return;
+    }
+    const review = { runId: message.runId, conversationId: message.conversationId, assistantMessage: message.assistantMessage };
+    const pendingReviews = await chrome.storage.local.get("pendingReviews");
+    await chrome.storage.local.set({ pendingReviews: { ...(pendingReviews.pendingReviews || {}), [message.runId]: review } });
+    sendReview(review);
+    sendResponse({ ok: true });
+  });
+  return true;
+});
+
 function send(message) {
   if (
     !socket ||
@@ -599,6 +752,10 @@ function send(message) {
   );
 
   return true;
+}
+
+function sendReview(review) {
+  return send(buildReviewCommand(review));
 }
 
 function requestNextSoon(delay) {

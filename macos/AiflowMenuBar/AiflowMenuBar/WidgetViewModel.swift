@@ -34,6 +34,7 @@ final class WidgetViewModel: ObservableObject {
     private let validateGit: (String) -> GitRepositoryValidator.Result
     private let notifications: NotificationManaging
     private let handoffStore: RunResultHandoffStore
+    private let reviewStore: ChatGPTReviewStore
     private let now: () -> Date
 
     private var client: CodexAppServerClient?
@@ -91,6 +92,7 @@ final class WidgetViewModel: ObservableObject {
         },
         notifications: NotificationManaging? = nil,
         handoffStore: RunResultHandoffStore = RunResultHandoffStore(),
+        reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
         now: @escaping () -> Date = Date.init
     ) {
         self.cli = cli
@@ -101,6 +103,7 @@ final class WidgetViewModel: ObservableObject {
         self.validateGit = validateGit
         self.notifications = notifications ?? NotificationManager()
         self.handoffStore = handoffStore
+        self.reviewStore = reviewStore
         self.now = now
         self.selectedModelRole =
             defaults.string(forKey: Self.modelKey) ?? CodexConfig.defaultModelRole
@@ -658,7 +661,8 @@ final class WidgetViewModel: ObservableObject {
         guard handoffTransportServer == nil else { return }
 
         let server = HandoffTransportServer(
-            store: handoffStore
+            store: handoffStore,
+            reviewStore: reviewStore
         )
 
         handoffTransportServer = server

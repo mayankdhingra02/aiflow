@@ -12,6 +12,7 @@ final class HandoffTransportServer: @unchecked Sendable {
 
     private let port: UInt16
     private let store: RunResultHandoffStore
+    private let reviewStore: ChatGPTReviewStore
     private let token: String?
 
     private let queue =
@@ -30,10 +31,12 @@ final class HandoffTransportServer: @unchecked Sendable {
     init(
         port: UInt16 = HandoffTransportServer.defaultPort,
         store: RunResultHandoffStore,
+        reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
         token: String? = HandoffToken.loadOrCreate()
     ) {
         self.port = port
         self.store = store
+        self.reviewStore = reviewStore
         self.token = token
     }
 
@@ -229,6 +232,11 @@ final class HandoffTransportServer: @unchecked Sendable {
                 return
             }
 
+            guard command.protocolVersion == HandoffTransport.protocolVersion else {
+                send(.error("protocol_incompatible"), to: connection)
+                return
+            }
+
             guard
                 let candidate = command.token,
                 let expected = token,
@@ -307,6 +315,9 @@ final class HandoffTransportServer: @unchecked Sendable {
                 command,
                 on: connection
             )
+
+        case .review:
+            captureReview(command, on: connection)
         }
     }
 
@@ -433,6 +444,59 @@ final class HandoffTransportServer: @unchecked Sendable {
                 ),
                 to: connection
             )
+        }
+    }
+
+    private func captureReview(_ command: HandoffClientCommand, on connection: Connection) {
+        guard let runId = command.runId else {
+            send(.error("missing_run_id"), to: connection)
+            return
+        }
+
+        guard UUID(uuidString: runId) != nil else {
+            send(.error("invalid_run_id", runId: runId), to: connection)
+            return
+        }
+
+        guard let conversationId = command.conversationId,
+              let assistantMessage = command.assistantMessage,
+              !conversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !assistantMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              assistantMessage.lengthOfBytes(using: .utf8) <= ChatGPTReview.maximumAssistantMessageUTF8Bytes
+        else {
+            send(.error("invalid_review", runId: runId), to: connection)
+            return
+        }
+
+        guard let handoff = store.deliveredHandoff(runId: runId) else {
+            send(.error("handoff_not_delivered", runId: runId), to: connection)
+            return
+        }
+
+        guard handoff.sourceChat.conversationId == conversationId else {
+            send(.error("conversation_mismatch", runId: runId), to: connection)
+            return
+        }
+
+        let review = ChatGPTReview(
+            runId: runId,
+            conversationId: conversationId,
+            sourceChatURL: handoff.sourceChat.url,
+            assistantMessage: assistantMessage,
+            capturedAt: Date()
+        )
+
+        do {
+            try reviewStore.persist(review)
+            send(.reviewAck(runId: runId), to: connection)
+        } catch ChatGPTReviewStoreError.conflictingExistingRecord {
+            send(.error("review_conflict", runId: runId), to: connection)
+        } catch ChatGPTReviewStoreError.unreadableExistingRecord {
+            send(.error("review_conflict", runId: runId), to: connection)
+        } catch ChatGPTReviewStoreError.invalidRunId {
+            send(.error("invalid_run_id", runId: runId), to: connection)
+        } catch {
+            send(.error("review_store_error", runId: runId), to: connection)
         }
     }
 

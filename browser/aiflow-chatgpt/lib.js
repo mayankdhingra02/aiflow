@@ -76,3 +76,17 @@ export function buildHandoffMessage(handoff) {
     "If more implementation work is needed, give me the exact next instruction to send to Codex."
   ].join("\n");
 }
+
+export function reviewMessageIsBounded(message, maximumBytes = 32 * 1024) {
+  const text = String(message ?? "");
+  return text.trim().length > 0 && new TextEncoder().encode(text).length <= maximumBytes;
+}
+
+export function buildReviewCommand(review) {
+  return {
+    type: "review",
+    runId: review?.runId,
+    conversationId: review?.conversationId,
+    assistantMessage: review?.assistantMessage
+  };
+}
