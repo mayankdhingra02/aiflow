@@ -2,12 +2,16 @@ import {
   canonicalChatURL,
   buildHandoffMessage,
   buildReviewCommand,
-  reviewMessageIsBounded
+  reviewMessageIsBounded,
+  buildRoutingMessage,
+  buildRoutingResponseCommand,
+  routingMessageIsBounded,
+  createChannelAdmission
 } from "./lib.js";
 
 const WS_URL =
   "ws://127.0.0.1:47322";
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 
 const RETRY_MS = 4000;
 const EMPTY_POLL_MS = 3000;
@@ -16,7 +20,7 @@ const HEARTBEAT_MS = 20000;
 let socket = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
-let processing = false;
+const channelAdmission = createChannelAdmission();
 let authenticated = false;
 let connecting = false;
 let authenticationRejected = false;
@@ -70,7 +74,7 @@ function reconnect() {
 
   authenticated = false;
   authenticationRejected = false;
-  processing = false;
+  channelAdmission.reset();
 
   const previousSocket = socket;
   socket = null;
@@ -191,7 +195,7 @@ async function connect() {
 
         socket = null;
         authenticated = false;
-        processing = false;
+        channelAdmission.reset();
 
         stopHeartbeat();
         scheduleReconnect();
@@ -232,7 +236,7 @@ async function handleServerMessage(
       if (event.protocolVersion !== PROTOCOL_VERSION) {
         authenticated = false;
         authenticationRejected = true;
-        processing = false;
+        channelAdmission.reset();
         stopHeartbeat();
 
         await chrome.storage.local.set({
@@ -277,7 +281,9 @@ async function handleServerMessage(
       startHeartbeat();
       await resumeReviewObservations();
       await submitPendingReviews();
+      await resumeRoutingObservations();
       requestNextSoon(50);
+      requestRoutingSoon(50);
       break;
 
     case "pong":
@@ -312,6 +318,23 @@ async function handleServerMessage(
 
     case "review_ack":
       await markReviewAcknowledged(event.runId);
+      break;
+
+    case "routing":
+      await handleRouting(event.routing);
+      break;
+
+    case "routing_delivered_ack":
+      // The durable browser correlation was written before injection. This acknowledgement
+      // adds no local state; it only confirms the server transitioned `delivering → delivered`.
+      break;
+
+    case "routing_empty":
+      requestRoutingSoon(EMPTY_POLL_MS);
+      break;
+
+    case "routing_response_ack":
+      await clearRoutingEvidence(event.runId);
       break;
 
     case "error":
@@ -382,6 +405,22 @@ async function handleServerMessage(
           event.error
         );
       }
+
+      if (
+        [
+          "invalid_routing",
+          "invalid_run_id",
+          "routing_conflict",
+          "routing_delivery_conflict",
+          "routing_store_error",
+          "conversation_mismatch",
+          "routing_cancelled",
+          "routing_not_found",
+          "routing_manual_attention"
+        ].includes(event.error)
+      ) {
+        await clearRoutingEvidence(event.runId);
+      }
       break;
 
     default:
@@ -390,8 +429,6 @@ async function handleServerMessage(
 }
 
 async function handleHandoff(handoff) {
-  if (processing) return;
-
   if (
     !handoff ||
     !handoff.runId ||
@@ -400,53 +437,56 @@ async function handleHandoff(handoff) {
     return;
   }
 
-  const stored =
-    await chrome.storage.local.get([
-      "blockedRunId",
-      "blockedReason",
-      "deliveryReceipts"
-    ]);
-
-  const receipt =
-    stored.deliveryReceipts?.[
-      handoff.runId
-    ];
-
-  if (
-    receipt ===
-      handoff.sourceChat
-        ?.conversationId
-  ) {
-    console.info(
-      "Aiflow already confirmed this ChatGPT delivery locally:",
-      handoff.runId
-    );
-
-    await rememberReviewCorrelation(handoff);
-
-    send({
-      type: "delivered",
-      runId: handoff.runId
-    });
-
+  if (!channelAdmission.enter("handoff")) {
+    console.info("Aiflow coalesced duplicate handoff delivery:", handoff.runId);
     return;
   }
-
-  if (
-    stored.blockedRunId ===
-      handoff.runId
-  ) {
-    console.warn(
-      "Aiflow delivery is blocked:",
-      stored.blockedReason
-    );
-
-    return;
-  }
-
-  processing = true;
 
   try {
+    const stored =
+      await chrome.storage.local.get([
+        "blockedRunId",
+        "blockedReason",
+        "deliveryReceipts"
+      ]);
+
+    const receipt =
+      stored.deliveryReceipts?.[
+        handoff.runId
+      ];
+
+    if (
+      receipt ===
+        handoff.sourceChat
+          ?.conversationId
+    ) {
+      console.info(
+        "Aiflow already confirmed this ChatGPT delivery locally:",
+        handoff.runId
+      );
+
+      await rememberReviewCorrelation(handoff);
+
+      send({
+        type: "delivered",
+        runId: handoff.runId
+      });
+
+      return;
+    }
+
+    if (
+      stored.blockedRunId ===
+        handoff.runId
+    ) {
+      console.warn(
+        "Aiflow delivery is blocked:",
+        stored.blockedReason
+      );
+
+      return;
+    }
+
     const result =
       await deliverToChatGPT(
         handoff
@@ -489,7 +529,7 @@ async function handleHandoff(handoff) {
       result.error
     );
   } finally {
-    processing = false;
+    channelAdmission.leave("handoff");
   }
 }
 
@@ -627,6 +667,116 @@ async function waitForTabReady(
   return false;
 }
 
+async function handleRouting(request) {
+  if (!request?.runId) return;
+  if (!channelAdmission.enter("routing")) {
+    // The active operation for this exact server channel remains responsible for the
+    // acknowledgement. Coalescing cannot strand it behind unrelated handoff work.
+    console.info("Aiflow coalesced duplicate routing delivery:", request.runId);
+    return;
+  }
+  try {
+    if (!request.sourceChat?.url) {
+      send({ type: "routing_failed", runId: request.runId });
+      return;
+    }
+    const target = canonicalChatURL(request.sourceChat.url);
+    if (!target) {
+      send({ type: "routing_failed", runId: request.runId });
+      return;
+    }
+    const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+    let tab = tabs.find(candidate => canonicalChatURL(candidate.url) === target);
+    if (!tab) tab = await chrome.tabs.create({ url: target, active: false });
+    if (!tab?.id || !await waitForTabReady(tab.id, target)) {
+      send({ type: "routing_failed", runId: request.runId });
+      return;
+    }
+    // Persist correlation before delivery: ChatGPT can create and complete the assistant
+    // response before the delivery request returns to this service worker.
+    const { routingCorrelations = {} } = await chrome.storage.local.get("routingCorrelations");
+    routingCorrelations[request.runId] = {
+      conversationId: request.sourceChat.conversationId,
+      sentinel: `[Aiflow routing ${request.runId}]`
+    };
+    await chrome.storage.local.set({ routingCorrelations });
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: "aiflow-deliver-routing",
+      runId: request.runId,
+      conversationId: request.sourceChat.conversationId,
+      sentinel: `[Aiflow routing ${request.runId}]`,
+      text: buildRoutingMessage(request)
+    });
+    if (!response?.ok) {
+      delete routingCorrelations[request.runId];
+      await chrome.storage.local.set({ routingCorrelations });
+      send({ type: "routing_failed", runId: request.runId });
+      return;
+    }
+    send({ type: "routing_delivered", runId: request.runId });
+  } catch {
+    send({ type: "routing_failed", runId: request.runId });
+  } finally {
+    channelAdmission.leave("routing");
+    requestRoutingSoon(100);
+  }
+}
+
+async function requestRoutingObservation(runId, correlation) {
+  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+  const tab = tabs.find(candidate =>
+    canonicalChatURL(candidate.url) === `https://chatgpt.com/c/${correlation.conversationId}`
+  );
+  if (!tab?.id) return;
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "aiflow-observe-routing",
+      runId,
+      conversationId: correlation.conversationId,
+      sentinel: correlation.sentinel
+    });
+  } catch {}
+}
+
+async function resumeRoutingObservations() {
+  const { routingCorrelations = {}, pendingRoutingResponses = {}, pendingRoutingFailures = {} } =
+    await chrome.storage.local.get(["routingCorrelations", "pendingRoutingResponses", "pendingRoutingFailures"]);
+  await Promise.all(Object.entries(routingCorrelations).map(([runId, correlation]) =>
+    requestRoutingObservation(runId, correlation)
+  ));
+  for (const response of Object.values(pendingRoutingResponses)) {
+    send(buildRoutingResponseCommand(response));
+  }
+  for (const failure of Object.values(pendingRoutingFailures)) {
+    send({ type: "routing_failed", runId: failure.runId });
+  }
+}
+
+async function clearRoutingEvidence(runId, preservePendingFailure = false) {
+  if (!runId) return;
+  const { routingCorrelations = {}, pendingRoutingResponses = {}, pendingRoutingFailures = {}, deliveryReceipts = {} } =
+    await chrome.storage.local.get(["routingCorrelations", "pendingRoutingResponses", "pendingRoutingFailures", "deliveryReceipts"]);
+  const correlation = routingCorrelations[runId];
+  delete routingCorrelations[runId];
+  delete pendingRoutingResponses[runId];
+  if (!preservePendingFailure) delete pendingRoutingFailures[runId];
+  delete deliveryReceipts[runId];
+  await chrome.storage.local.set({ routingCorrelations, pendingRoutingResponses, pendingRoutingFailures, deliveryReceipts });
+  if (correlation?.conversationId) {
+    const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+    const tab = tabs.find(candidate => canonicalChatURL(candidate.url) === `https://chatgpt.com/c/${correlation.conversationId}`);
+    if (tab?.id) {
+      try { await chrome.tabs.sendMessage(tab.id, { type: "aiflow-cancel-routing-observation", runId }); } catch {}
+    }
+  }
+}
+
+function requestRoutingSoon(delay) {
+  setTimeout(() => {
+    if (authenticated && !channelAdmission.isActive("routing")) send({ type: "next_routing" });
+  }, delay);
+}
+
 async function removeDeliveryReceipt(
   runId
 ) {
@@ -743,6 +893,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "aiflow-routing-observation-failed") return;
+  chrome.storage.local.get("pendingRoutingFailures").then(async ({ pendingRoutingFailures = {} }) => {
+    await chrome.storage.local.set({
+      pendingRoutingFailures: { ...pendingRoutingFailures, [message.runId]: { runId: message.runId } }
+    });
+    await clearRoutingEvidence(message.runId, true);
+    send({ type: "routing_failed", runId: message.runId });
+    sendResponse({ ok: true });
+  });
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "aiflow-routing-captured") return;
+  chrome.storage.local.get("routingCorrelations").then(async ({ routingCorrelations = {} }) => {
+    const correlation = routingCorrelations[message.runId];
+    if (!correlation || correlation.conversationId !== message.conversationId ||
+        !routingMessageIsBounded(message.assistantMessage)) {
+      sendResponse({ ok: false });
+      return;
+    }
+    const response = {
+      runId: message.runId,
+      conversationId: message.conversationId,
+      assistantMessage: message.assistantMessage
+    };
+    const { pendingRoutingResponses = {} } =
+      await chrome.storage.local.get("pendingRoutingResponses");
+    await chrome.storage.local.set({
+      pendingRoutingResponses: { ...pendingRoutingResponses, [message.runId]: response }
+    });
+    send(buildRoutingResponseCommand(response));
+    sendResponse({ ok: true });
+  });
+  return true;
+});
+
 function send(message) {
   if (
     !socket ||
@@ -767,7 +955,7 @@ function requestNextSoon(delay) {
   setTimeout(() => {
     if (
       authenticated &&
-      !processing
+      !channelAdmission.isActive("handoff")
     ) {
       send({
         type: "next"

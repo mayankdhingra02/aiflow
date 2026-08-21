@@ -239,6 +239,22 @@ struct MenuBarView: View {
             }
         }
             HStack {
+                Text("Initial run routing").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: Binding(get: { viewModel.initialRoutingMode }, set: { viewModel.setInitialRoutingMode($0) })) {
+                    Text("Manual").tag(InitialRoutingMode.manual)
+                    Text("ChatGPT").tag(InitialRoutingMode.chatGPT)
+                }.labelsHidden()
+            }
+            if let routing = viewModel.initialRoutingAttention,
+               routing.manualFallbackAvailable == true {
+                Text("Routing needs attention for \(routing.project.name).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Use Manual Selection") {
+                    viewModel.useManualInitialRoutingSelection()
+                }
+            }
+            HStack {
                 Text("Review follow-up routing").font(.caption).foregroundStyle(.secondary)
                 Picker("", selection: Binding(
                     get: { viewModel.followUpRoutingMode },

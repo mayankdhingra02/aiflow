@@ -1,7 +1,7 @@
 import Foundation
 
 enum HandoffTransport {
-    static let protocolVersion = 2
+    static let protocolVersion = 3
     static let maximumInboundMessageBytes = 64 * 1024
 }
 
@@ -11,6 +11,10 @@ enum HandoffClientCommandType: String, Codable, Equatable {
     case delivered
     case review
     case ping
+    case nextRouting = "next_routing"
+    case routingDelivered = "routing_delivered"
+    case routingResponse = "routing_response"
+    case routingFailed = "routing_failed"
 }
 
 struct HandoffClientCommand: Codable, Equatable {
@@ -61,6 +65,11 @@ struct HandoffClientCommand: Codable, Equatable {
             runId: nil, protocolVersion: nil, conversationId: nil, assistantMessage: nil
         )
     }
+
+    static func nextRouting() -> HandoffClientCommand { HandoffClientCommand(type: .nextRouting, token: nil, runId: nil, protocolVersion: nil, conversationId: nil, assistantMessage: nil) }
+    static func routingDelivered(runId: String) -> HandoffClientCommand { HandoffClientCommand(type: .routingDelivered, token: nil, runId: runId, protocolVersion: nil, conversationId: nil, assistantMessage: nil) }
+    static func routingResponse(runId: String, conversationId: String, assistantMessage: String) -> HandoffClientCommand { HandoffClientCommand(type: .routingResponse, token: nil, runId: runId, protocolVersion: nil, conversationId: conversationId, assistantMessage: assistantMessage) }
+    static func routingFailed(runId: String) -> HandoffClientCommand { HandoffClientCommand(type: .routingFailed, token: nil, runId: runId, protocolVersion: nil, conversationId: nil, assistantMessage: nil) }
 }
 
 enum HandoffServerEventType: String, Codable, Equatable {
@@ -72,12 +81,17 @@ enum HandoffServerEventType: String, Codable, Equatable {
     case deliveredAck = "delivered_ack"
     case reviewAck = "review_ack"
     case error
+    case routing
+    case routingEmpty = "routing_empty"
+    case routingDeliveredAck = "routing_delivered_ack"
+    case routingResponseAck = "routing_response_ack"
 }
 
 struct HandoffServerEvent: Codable, Equatable {
     let type: HandoffServerEventType
     var protocolVersion: Int?
     var handoff: RunResultHandoff?
+    var routing: CodexInitialRoutingRequest?
     var runId: String?
     var error: String?
 
@@ -122,6 +136,11 @@ struct HandoffServerEvent: Codable, Equatable {
     static func reviewAck(runId: String) -> HandoffServerEvent {
         HandoffServerEvent(type: .reviewAck, runId: runId)
     }
+
+    static func routing(_ request: CodexInitialRoutingRequest) -> HandoffServerEvent { HandoffServerEvent(type: .routing, routing: request, runId: request.runId) }
+    static func routingEmpty() -> HandoffServerEvent { HandoffServerEvent(type: .routingEmpty) }
+    static func routingDeliveredAck(runId: String) -> HandoffServerEvent { HandoffServerEvent(type: .routingDeliveredAck, runId: runId) }
+    static func routingResponseAck(runId: String) -> HandoffServerEvent { HandoffServerEvent(type: .routingResponseAck, runId: runId) }
 
     static func error(
         _ code: String,

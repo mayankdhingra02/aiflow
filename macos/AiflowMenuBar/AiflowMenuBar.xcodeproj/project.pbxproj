@@ -20,6 +20,7 @@
 		44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */; };
 		45FC687B867651D7D8D5C9A0 /* HandoffTransportServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7885F26343CD4FF23777CE64 /* HandoffTransportServerTests.swift */; };
 		4701DAEED8C79485CB72D7B2 /* ReviewLoopEvidenceValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6324E5EFBA9DF45F9C1C25F0 /* ReviewLoopEvidenceValidator.swift */; };
+		4B67CA2469F3158D05EA8669 /* InitialRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2305F8877D4C2F51D9A18BAD /* InitialRouting.swift */; };
 		4FA04480A556FB113481DE4E /* ChatGPTReviewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */; };
 		538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */; };
 		55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */; };
@@ -35,6 +36,7 @@
 		84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */; };
 		851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */; };
 		8E765EB24821BC85B5A79A25 /* ReviewLoopReadModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2999E2C58408B1A4A113F192 /* ReviewLoopReadModelTests.swift */; };
+		9848262FCBBB5AF7A96716EA /* InitialRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D2E8743BE38B4E8CB40CFA /* InitialRoutingTests.swift */; };
 		9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */; };
 		9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */; };
 		A8BAD1770A8E4D2FCC74F724 /* ReviewLoopReadModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B955B993FCF6648AE817BC0 /* ReviewLoopReadModel.swift */; };
@@ -76,6 +78,7 @@
 		1C985898D56C89DBBB229B0A /* BridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeTests.swift; sourceTree = "<group>"; };
 		1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocator.swift; sourceTree = "<group>"; };
 		1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMapTests.swift; sourceTree = "<group>"; };
+		2305F8877D4C2F51D9A18BAD /* InitialRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InitialRouting.swift; sourceTree = "<group>"; };
 		24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AiflowMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		287D7C9BFA90E847AF5C6ADF /* ChatGPTReviewDispatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewDispatch.swift; sourceTree = "<group>"; };
@@ -112,6 +115,7 @@
 		B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunResultHandoff.swift; sourceTree = "<group>"; };
 		B76D46C558BE296D732DE958 /* BridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeProtocol.swift; sourceTree = "<group>"; };
 		BCE999D706097DEEC4AFADD5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C3D2E8743BE38B4E8CB40CFA /* InitialRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InitialRoutingTests.swift; sourceTree = "<group>"; };
 		C813CBE56EA3964AB81BBB64 /* HandoffToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffToken.swift; sourceTree = "<group>"; };
 		CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowCLITests.swift; sourceTree = "<group>"; };
 		DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViewModel.swift; sourceTree = "<group>"; };
@@ -158,6 +162,7 @@
 				60E4490A77F815FE60755AF7 /* HandoffTokenTests.swift */,
 				6CF2C6552E7305D42D9FD6A4 /* HandoffTransportProtocolTests.swift */,
 				7885F26343CD4FF23777CE64 /* HandoffTransportServerTests.swift */,
+				C3D2E8743BE38B4E8CB40CFA /* InitialRoutingTests.swift */,
 				30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */,
 				985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */,
 				2999E2C58408B1A4A113F192 /* ReviewLoopReadModelTests.swift */,
@@ -190,6 +195,7 @@
 				73029581FB768294AD9CD1AC /* HandoffTransportProtocol.swift */,
 				EE9CD86792EBA6D1298436DA /* HandoffTransportServer.swift */,
 				BCE999D706097DEEC4AFADD5 /* Info.plist */,
+				2305F8877D4C2F51D9A18BAD /* InitialRouting.swift */,
 				24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */,
 				7F25D8E351B8F533ADD42379 /* Models.swift */,
 				97E859A74BB6436A2CB1B244 /* NotificationManager.swift */,
@@ -301,6 +307,7 @@
 				E463D43A86E104AB73C31854 /* HandoffToken.swift in Sources */,
 				5E8266CCB64F25226C88DBB3 /* HandoffTransportProtocol.swift in Sources */,
 				639E9AC4A99AB6D35174B27B /* HandoffTransportServer.swift in Sources */,
+				4B67CA2469F3158D05EA8669 /* InitialRouting.swift in Sources */,
 				9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */,
 				AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */,
 				05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */,
@@ -332,6 +339,7 @@
 				29D806DA5D4B7244103BFB8C /* HandoffTokenTests.swift in Sources */,
 				77A3E27227B8F4E4359FC503 /* HandoffTransportProtocolTests.swift in Sources */,
 				45FC687B867651D7D8D5C9A0 /* HandoffTransportServerTests.swift in Sources */,
+				9848262FCBBB5AF7A96716EA /* InitialRoutingTests.swift in Sources */,
 				8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */,
 				55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */,
 				8E765EB24821BC85B5A79A25 /* ReviewLoopReadModelTests.swift in Sources */,

@@ -374,6 +374,7 @@ extension RunState {
         switch self {
         case .ready: return "ready"
         case .confirming: return "confirming"
+        case .routing: return "routing"
         case .launching: return "launching"
         case .running: return "running"
         case .waitingForApproval: return "waiting_for_approval"

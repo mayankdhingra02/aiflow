@@ -38,6 +38,7 @@ enum AiflowAttentionEvent: Equatable {
     case reviewChangesRequested(sourceRunId: String, projectName: String)
     case reviewManualAttention(sourceRunId: String, projectName: String, reason: String)
     case reviewAutomationBlocked(reason: String)
+    case routingNeedsAttention(runId: String, projectName: String, category: String)
     case manualActionRequired(
         runId: String,
         projectName: String,
@@ -59,6 +60,8 @@ enum AiflowAttentionEvent: Equatable {
             return "review.manual.\(sourceRunId).\(stableIdentifierComponent(reason))"
         case let .reviewAutomationBlocked(reason):
             return "review.blocked.\(stableIdentifierComponent(reason))"
+        case let .routingNeedsAttention(runId, _, category):
+            return "routing.attention.\(runId).\(stableIdentifierComponent(category))"
         case let .manualActionRequired(runId, _, category, requestId, _):
             return "manual.\(category.rawValue).\(runId).\(requestId)"
         }
@@ -177,6 +180,8 @@ extension NotificationManaging {
             sendReviewNeedsAttention(projectName: projectName, reason: reason)
         case let .reviewAutomationBlocked(reason):
             sendReviewAutomationBlocked(reason: reason)
+        case .routingNeedsAttention:
+            break
         default:
             break
         }
@@ -256,6 +261,8 @@ final class NotificationManager: NSObject, NotificationManaging, UNUserNotificat
             send(identifier: identifier, title: "Aiflow — ChatGPT Review", body: "\(bounded(projectName)): \(bounded(reason))")
         case let .reviewAutomationBlocked(reason):
             send(identifier: identifier, title: "Aiflow — Review Automation Paused", body: bounded(reason))
+        case let .routingNeedsAttention(_, projectName, _):
+            send(identifier: identifier, title: "Aiflow — Routing Needs Attention", body: "\(bounded(projectName)): choose a model and reasoning level to continue.")
         case let .manualActionRequired(_, projectName, category, _, reason):
             let title = category == .question
                 ? "Aiflow — Codex Needs Input"

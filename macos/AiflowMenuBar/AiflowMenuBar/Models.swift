@@ -143,6 +143,7 @@ struct UserQuestion: Equatable, Identifiable {
 enum RunState: Equatable {
     case ready
     case confirming(SavedProject)
+    case routing(SavedProject)
     case launching(SavedProject)
     case running(SavedProject)
     case waitingForApproval(ApprovalRequest)
@@ -158,7 +159,7 @@ enum RunState: Equatable {
     /// True once a run has started and has not yet finished — blocks starting a second run.
     var isBusy: Bool {
         switch self {
-        case .launching, .running, .waitingForApproval, .waitingForInput, .respondingToRequest,
+        case .routing, .launching, .running, .waitingForApproval, .waitingForInput, .respondingToRequest,
             .cancelling:
             return true
         case .ready, .confirming, .completed, .cancelled, .failed:
@@ -180,6 +181,7 @@ enum RunState: Equatable {
         switch self {
         case .ready: return "Ready"
         case .confirming: return "Awaiting confirmation"
+        case .routing: return "Selecting Codex settings in ChatGPT..."
         case .launching: return "Starting Codex…"
         case .running: return "Running Codex…"
         case .waitingForApproval: return "Waiting for your approval"

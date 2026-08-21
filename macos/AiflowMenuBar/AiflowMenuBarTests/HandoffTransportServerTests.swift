@@ -7,10 +7,13 @@ final class HandoffTransportServerTests: XCTestCase {
     private var directory: URL!
     private var store: RunResultHandoffStore!
     private var reviewStore: ChatGPTReviewStore!
+    private var routingStore: CodexInitialRoutingStore!
     private var server: HandoffTransportServer!
     private var socket: URLSessionWebSocketTask!
     private var token: String!
     private var port: UInt16!
+    private var routingResponseCount = 0
+    private var routingAttentionCount = 0
 
     override func setUp() async throws {
         try await super.setUp()
@@ -34,6 +37,7 @@ final class HandoffTransportServerTests: XCTestCase {
             )
 
         reviewStore = ChatGPTReviewStore(directoryURL: directory.appendingPathComponent("reviews"))
+        routingStore = CodexInitialRoutingStore(directoryURL: directory.appendingPathComponent("routing"))
 
         token = HandoffToken.generate()
         port = 0
@@ -43,7 +47,10 @@ final class HandoffTransportServerTests: XCTestCase {
                 port: port,
                 store: store,
                 reviewStore: reviewStore,
-                token: token
+                routingStore: routingStore,
+                token: token,
+                onRoutingResponse: { [weak self] _ in self?.routingResponseCount += 1 },
+                onRoutingAttention: { [weak self] _ in self?.routingAttentionCount += 1 }
             )
 
         XCTAssertTrue(server.start())
@@ -495,6 +502,93 @@ final class HandoffTransportServerTests: XCTestCase {
         XCTAssertEqual(try receiveEvent().error, "review_conflict")
         try send(.review(runId: handoff.runId, conversationId: handoff.sourceChat.conversationId, assistantMessage: String(repeating: "x", count: 33 * 1024)))
         XCTAssertEqual(try receiveEvent().error, "invalid_review")
+    }
+
+    func testRoutingFailureWinsBeforeResponseAndPermitsManualFallback() throws {
+        let request = sampleRoutingRequest()
+        try routingStore.persist(request)
+        try authenticate()
+        try send(.nextRouting())
+        XCTAssertEqual(try receiveEvent().type, .routing)
+        try send(.routingDelivered(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingDeliveredAck)
+
+        try send(.routingFailed(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.state, .manualAttention)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.manualFallbackAvailable, true)
+        XCTAssertEqual(routingAttentionCount, 1)
+
+        try send(.routingResponse(
+            runId: request.runId,
+            conversationId: request.sourceChat.conversationId,
+            assistantMessage: "# Codex Routing\n## Model\nsol\n## Reasoning\nhigh"
+        ))
+        XCTAssertEqual(try receiveEvent().error, "routing_conflict")
+        XCTAssertEqual(routingResponseCount, 0)
+    }
+
+    func testLateRoutingFailureCannotReplaceResponseOrExecutionEvidence() throws {
+        let request = sampleRoutingRequest()
+        try routingStore.persist(request)
+        try authenticate()
+        try send(.nextRouting())
+        _ = try receiveEvent()
+        try send(.routingDelivered(runId: request.runId))
+        _ = try receiveEvent()
+        let response = "# Codex Routing\n## Model\nsol\n## Reasoning\nhigh"
+        try send(.routingResponse(runId: request.runId, conversationId: request.sourceChat.conversationId, assistantMessage: response))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(routingResponseCount, 1)
+
+        try send(.routingFailed(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.state, .completed)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.assistantMessage, response)
+        XCTAssertNotEqual(try routingStore.record(runId: request.runId)?.manualFallbackAvailable, true)
+        XCTAssertEqual(routingAttentionCount, 0)
+
+        _ = try routingStore.beginExecution(runId: request.runId)
+        try send(.routingFailed(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.state, .starting)
+        XCTAssertNotEqual(try routingStore.record(runId: request.runId)?.manualFallbackAvailable, true)
+
+        try routingStore.markStarted(runId: request.runId)
+        try send(.routingFailed(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.state, .started)
+        XCTAssertNotEqual(try routingStore.record(runId: request.runId)?.manualFallbackAvailable, true)
+
+        _ = try routingStore.reconcileAfterRestart()
+        try send(.routingFailed(runId: request.runId))
+        XCTAssertEqual(try receiveEvent().type, .routingResponseAck)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.state, .manualAttention)
+        XCTAssertEqual(try routingStore.record(runId: request.runId)?.manualFallbackAvailable, false)
+    }
+
+    private func authenticate() throws {
+        _ = try receiveEvent()
+        try send(.auth(token: token))
+        XCTAssertEqual(try receiveEvent().type, .ready)
+    }
+
+    private func sampleRoutingRequest() -> CodexInitialRoutingRequest {
+        .init(
+            schemaVersion: 1,
+            runId: UUID().uuidString,
+            project: .init(id: UUID(), name: "demo", path: "/repos/demo"),
+            sourceChat: .init(url: "https://chatgpt.com/c/chat-one", conversationId: "chat-one"),
+            prompt: "Fix it",
+            manualModelRole: "terra",
+            manualModelId: "gpt-5.6-terra",
+            manualEffort: "medium",
+            assistantMessage: nil,
+            state: .pending,
+            createdAt: Date(),
+            updatedAt: Date(),
+            terminalReason: nil
+        )
     }
 
     private func send(
