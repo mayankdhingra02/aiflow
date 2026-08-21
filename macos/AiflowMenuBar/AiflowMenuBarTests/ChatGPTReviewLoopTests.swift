@@ -13,14 +13,39 @@ final class ChatGPTReviewLoopTests: XCTestCase {
     func testParserAcceptsChangesRequestedInstruction() throws {
         XCTAssertEqual(
             try parse("# Implementation Review\n\n## Verdict\n\nCHANGES_REQUESTED\n\n## Codex Instruction\n\nFix the failing test."),
-            .changesRequested(instruction: "Fix the failing test.")
+            .changesRequested(instruction: "Fix the failing test.", executionRecommendation: nil)
         )
     }
 
     func testParserAcceptsRenderedChatGPTChangesRequested() throws {
         XCTAssertEqual(
             try parse("Implementation Review\nVerdict\n\nCHANGES_REQUESTED\n\nCodex Instruction\n\nChange aiflow-loop-acceptance.txt so that it contains exactly:\n\nPASS_2"),
-            .changesRequested(instruction: "Change aiflow-loop-acceptance.txt so that it contains exactly:\n\nPASS_2")
+            .changesRequested(
+                instruction: "Change aiflow-loop-acceptance.txt so that it contains exactly:\n\nPASS_2",
+                executionRecommendation: nil
+            )
+        )
+    }
+
+    func testParserAcceptsAllSupportedExecutionShapes() throws {
+        for (role, effort) in [("luna", "low"), ("terra", "medium"), ("sol", "high"), ("sol", "xhigh")] {
+            XCTAssertEqual(
+                try parse(changesRequestedMessage(model: role, effort: effort)),
+                .changesRequested(
+                    instruction: "Fix it.",
+                    executionRecommendation: .init(modelRole: role, effort: effort)
+                )
+            )
+        }
+    }
+
+    func testParserAcceptsBrowserContractReview() throws {
+        XCTAssertEqual(
+            try parse(changesRequestedMessage(model: "sol", effort: "high")),
+            .changesRequested(
+                instruction: "Fix it.",
+                executionRecommendation: .init(modelRole: "sol", effort: "high")
+            )
         )
     }
 
@@ -34,6 +59,23 @@ final class ChatGPTReviewLoopTests: XCTestCase {
     func testParserRejectsContradictoryVerdict() { XCTAssertThrowsError(try parse("# Implementation Review\n## Verdict\nSHIP CHANGES_REQUESTED")) }
     func testParserRejectsMissingInstruction() { XCTAssertThrowsError(try parse("# Implementation Review\n## Verdict\nCHANGES_REQUESTED")) }
     func testParserRejectsAmbiguousHeading() { XCTAssertThrowsError(try parse("# Implementation Review\n## Verdict\nSHIP\n## Notes\nMaybe")) }
+    func testParserRejectsMalformedExecution() {
+        for text in [
+            "# Implementation Review\n## Verdict\nSHIP\n## Codex Execution\nModel: sol\nReasoning: high",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Instruction\nFix it.\n## Codex Execution\nModel: sol\nReasoning: high",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: sol\nModel: terra\nReasoning: high\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: sol\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: sol\nReasoning: high\nExtra: no\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: sol or terra\nReasoning: high\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: sol\nReasoning: high\nReasoning: low\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: terra # use this\nReasoning: high\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\n- Model: terra\nReasoning: high\n## Codex Instruction\nFix it.",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: terra\nReasoning: high\n## Codex Instruction\nFix it.\n## Notes\nextra",
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Execution\nModel: terra\nReasoning: high\n## Codex Execution\nModel: sol\nReasoning: low\n## Codex Instruction\nFix it."
+        ] {
+            XCTAssertThrowsError(try parse(text), text)
+        }
+    }
 
     func testDispatchStoreIsIdempotentAndConflictsFail() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -48,7 +90,11 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             assistantMessage: "different", verdict: value.verdict, instruction: value.instruction,
             followUpRunId: value.followUpRunId, parentRunId: value.parentRunId, project: value.project,
             codexConversationId: value.codexConversationId, modelRole: value.modelRole,
-            modelId: value.modelId, effort: value.effort, lineageDepth: value.lineageDepth,
+            modelId: value.modelId, effort: value.effort,
+            recommendedModelRole: value.recommendedModelRole,
+            recommendedEffort: value.recommendedEffort,
+            usesRecommendedExecution: value.usesRecommendedExecution,
+            lineageDepth: value.lineageDepth,
             state: value.state, createdAt: value.createdAt, updatedAt: value.updatedAt,
             terminalReason: value.terminalReason
         )
@@ -70,6 +116,82 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             XCTAssertEqual($0 as? ChatGPTReviewDispatchStoreError, .unreadableExistingRecord)
         }
         XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
+    func testDispatchStoreReadsHistoricalRecordWithoutRoutingFields() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ChatGPTReviewDispatchStore(directoryURL: directory)
+        let value = sampleDispatch()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any]
+        )
+        object.removeValue(forKey: "recommendedModelRole")
+        object.removeValue(forKey: "recommendedEffort")
+        object.removeValue(forKey: "usesRecommendedExecution")
+        try JSONSerialization.data(withJSONObject: object).write(
+            to: directory.appendingPathComponent("\(value.sourceRunId).json")
+        )
+
+        let restored = try XCTUnwrap(store.record(sourceRunId: value.sourceRunId))
+        XCTAssertNil(restored.recommendedModelRole)
+        XCTAssertNil(restored.recommendedEffort)
+        XCTAssertNil(restored.usesRecommendedExecution)
+    }
+
+    func testLegacyDispatchJSONRetainsEveryStateWithoutRoutingFields() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ChatGPTReviewDispatchStore(directoryURL: directory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let values: [ChatGPTReviewDispatch] = [
+            sampleDispatch(state: .pending),
+            sampleDispatch(state: .dispatching),
+            sampleDispatch(state: .dispatched),
+            sampleDispatch(state: .completed),
+            sampleDispatch(followUpRunId: nil, instruction: nil, state: .stopped, verdict: "SHIP"),
+            sampleDispatch(state: .manualAttention)
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        for value in values {
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any]
+            )
+            object.removeValue(forKey: "recommendedModelRole")
+            object.removeValue(forKey: "recommendedEffort")
+            object.removeValue(forKey: "usesRecommendedExecution")
+            let data = try JSONSerialization.data(withJSONObject: object)
+            try data.write(to: directory.appendingPathComponent("\(value.sourceRunId).json"))
+
+            let restored = try XCTUnwrap(store.record(sourceRunId: value.sourceRunId))
+            XCTAssertEqual(restored.state, value.state)
+            XCTAssertNil(restored.recommendedModelRole)
+            XCTAssertNil(restored.recommendedEffort)
+            XCTAssertNil(restored.usesRecommendedExecution)
+        }
+    }
+
+    func testDispatchStoreRejectsImpossibleRoutingCombinations() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ChatGPTReviewDispatchStore(directoryURL: directory)
+        for value in [
+            sampleDispatch(recommendedModelRole: "sol", recommendedEffort: nil),
+            sampleDispatch(recommendedModelRole: nil, recommendedEffort: "high"),
+            sampleDispatch(usesRecommendedExecution: true)
+        ] {
+            XCTAssertThrowsError(try store.prepare(value))
+        }
+        XCTAssertNoThrow(try store.prepare(sampleDispatch(
+            recommendedModelRole: "sol",
+            recommendedEffort: "high",
+            usesRecommendedExecution: false
+        )))
     }
 
     func testDispatchPersistenceFailureStartsZeroTurns() throws {
@@ -280,6 +402,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
     func testFiveFollowupsStillBlockTheSixth() throws {
         let harness = try makeHarness()
         defer { harness.remove() }
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
         var sourceRunId = UUID().uuidString
         for depth in 1...5 {
             let followUpRunId = UUID().uuidString
@@ -291,7 +415,11 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             ))
             sourceRunId = followUpRunId
         }
-        try persistChangesRequestedEvidence(runId: sourceRunId, harness: harness)
+        try persistEvidence(
+            runId: sourceRunId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
 
         harness.viewModel.reconcileReviewsForTesting()
 
@@ -326,6 +454,267 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             try harness.dispatchStore.record(sourceRunId: sourceRunId)?.state,
             .dispatching
         )
+    }
+
+    func testChatGPTRoutingPersistsAndUsesRecommendationInSameConversation() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
+
+        harness.viewModel.reconcileReviewsForTesting()
+        let dispatch = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: runId))
+        XCTAssertEqual(dispatch.recommendedModelRole, "sol")
+        XCTAssertEqual(dispatch.recommendedEffort, "high")
+        XCTAssertEqual(dispatch.usesRecommendedExecution, true)
+
+        harness.viewModel.setFollowUpRoutingMode(.manual)
+        harness.viewModel.selectedModelRole = "terra"
+        harness.viewModel.selectedEffort = "low"
+        harness.viewModel.setOfficialWorkerAvailable(true)
+
+        let event = try XCTUnwrap(harness.recorder.events.first)
+        XCTAssertEqual(event.type, .executeFollowup)
+        XCTAssertEqual(event.conversationId, "codex-chat")
+        XCTAssertEqual(event.model, "sol")
+        XCTAssertEqual(event.effort, "high")
+
+        let followUpRunId = try XCTUnwrap(event.runId)
+        harness.viewModel.handleBridgeCommand(
+            BridgeCommand(type: .workerCompleted, runId: followUpRunId, message: "done")
+        )
+        let source = try XCTUnwrap(harness.handoffStore.deliveredHandoff(runId: runId))
+        let followUp = try XCTUnwrap(harness.handoffStore.handoff(runId: followUpRunId))
+        XCTAssertEqual(source.execution.modelRole, "terra")
+        XCTAssertEqual(source.execution.effort, "low")
+        XCTAssertEqual(followUp.execution.modelRole, "sol")
+        XCTAssertEqual(followUp.execution.modelId, "gpt-5.6-sol")
+        XCTAssertEqual(followUp.execution.effort, "high")
+    }
+
+    func testChatGPTRoutingMissingOrUnsupportedRecommendationRequiresManualAttention() throws {
+        for message in [
+            "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Instruction\nFix it.",
+            changesRequestedMessage(model: "unknown", effort: "high"),
+            changesRequestedMessage(model: "sol", effort: "unknown")
+        ] {
+            let harness = try makeHarness()
+            defer { harness.remove() }
+            harness.viewModel.applyConfigForTesting(routingConfig())
+            harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+            let runId = UUID().uuidString
+            try persistEvidence(runId: runId, message: message, harness: harness)
+            harness.viewModel.reconcileReviewsForTesting()
+
+            XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+            XCTAssertTrue(harness.recorder.events.isEmpty)
+        }
+    }
+
+    func testChatGPTRoutingRestartUsesPersistedRecommendation() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        let runId = UUID().uuidString
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+
+        let recorder = EventRecorder()
+        let restored = WidgetViewModel(
+            store: SavedProjectStore(fileURL: harness.root.appendingPathComponent("saved-projects.json")),
+            map: ChatProjectMap(fileURL: harness.root.appendingPathComponent("chat-map.json")),
+            defaults: UserDefaults(suiteName: harness.suiteName)!,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: SilentNotifications(),
+            handoffStore: harness.handoffStore,
+            reviewStore: harness.reviewStore,
+            reviewDispatchStore: harness.dispatchStore,
+            now: { self.date },
+            reviewFollowupSender: recorder.send
+        )
+        restored.applyConfigForTesting(routingConfig())
+        restored.setFollowUpRoutingMode(.manual)
+        restored.selectedModelRole = "terra"
+        restored.selectedEffort = "low"
+        restored.setOfficialWorkerAvailable(true)
+
+        let event = try XCTUnwrap(recorder.events.first)
+        XCTAssertEqual(event.type, .executeFollowup)
+        XCTAssertEqual(event.conversationId, "codex-chat")
+        XCTAssertEqual(event.model, "sol")
+        XCTAssertEqual(event.effort, "high")
+    }
+
+    func testManualRoutingKeepsSourceExecutionAfterRoutingAndSelectorChanges() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.usesRecommendedExecution, false)
+
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        harness.viewModel.selectedModelRole = "sol"
+        harness.viewModel.selectedEffort = "high"
+        harness.viewModel.setOfficialWorkerAvailable(true)
+
+        let event = try XCTUnwrap(harness.recorder.events.first)
+        XCTAssertEqual(event.model, "terra")
+        XCTAssertEqual(event.effort, "low")
+    }
+
+    func testChatGPTRoutingConfigDisappearanceRequiresManualAttention() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.applyConfigForTesting(CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low"],
+            defaultSandbox: "workspace-write"
+        ))
+        harness.viewModel.setOfficialWorkerAvailable(true)
+
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+    }
+
+    func testInvalidRoutingRemainsManualAttentionAfterRestartAndPreferenceChange() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "unknown", effort: "high"),
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+
+        let recorder = EventRecorder()
+        let restored = restoredViewModel(harness, recorder: recorder)
+        restored.applyConfigForTesting(routingConfig())
+        restored.setFollowUpRoutingMode(.manual)
+        restored.selectedModelRole = "terra"
+        restored.selectedEffort = "low"
+        restored.setOfficialWorkerAvailable(true)
+        restored.reconcileReviewsForTesting()
+
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+        XCTAssertTrue(recorder.events.isEmpty)
+    }
+
+    func testCompletedFollowUpRequiresMatchingImmutableHandoffEvidence() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        try persistEvidence(
+            runId: runId,
+            message: changesRequestedMessage(model: "sol", effort: "high"),
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+        let dispatch = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: runId))
+        let followUpRunId = try XCTUnwrap(dispatch.followUpRunId)
+        try harness.dispatchStore.update(sourceRunId: runId, state: .completed)
+        try persistFollowUpHandoff(
+            runId: followUpRunId,
+            modelRole: "terra",
+            modelId: "gpt-5.6-terra",
+            effort: "low",
+            harness: harness
+        )
+
+        harness.viewModel.recheckReviewEvidence()
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+    }
+
+    func testCompletedFollowUpRequiresHandoffEvidence() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        try harness.dispatchStore.update(sourceRunId: runId, state: .completed)
+
+        harness.viewModel.recheckReviewEvidence()
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+    }
+
+    func testCompletedFollowUpRejectsConversationAndProjectMismatch() throws {
+        let wrongProject = RunResultHandoff.ProjectContext(
+            id: UUID(), name: "wrong", path: "/tmp/wrong"
+        )
+        for (conversationId, project) in [("wrong-chat", nil), ("chat", wrongProject as RunResultHandoff.ProjectContext?)] {
+            let harness = try makeHarness()
+            defer { harness.remove() }
+            let runId = UUID().uuidString
+            try persistChangesRequestedEvidence(runId: runId, harness: harness)
+            harness.viewModel.reconcileReviewsForTesting()
+            let dispatch = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: runId))
+            let followUpRunId = try XCTUnwrap(dispatch.followUpRunId)
+            try harness.dispatchStore.update(sourceRunId: runId, state: .completed)
+            try persistFollowUpHandoff(
+                runId: followUpRunId,
+                modelRole: "terra",
+                modelId: "gpt-5.6-terra",
+                effort: "low",
+                conversationId: conversationId,
+                project: project,
+                harness: harness
+            )
+
+            harness.viewModel.recheckReviewEvidence()
+            XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        }
+    }
+
+    func testShipIsUnaffectedByChatGPTRoutingMode() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        harness.viewModel.applyConfigForTesting(routingConfig())
+        harness.viewModel.setFollowUpRoutingMode(.chatGPT)
+        let runId = UUID().uuidString
+        try persistEvidence(
+            runId: runId,
+            message: "# Implementation Review\n## Verdict\nSHIP",
+            harness: harness
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+
+        let dispatch = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: runId))
+        XCTAssertEqual(dispatch.state, .stopped)
+        XCTAssertNil(dispatch.recommendedModelRole)
+        XCTAssertNil(dispatch.recommendedEffort)
+        XCTAssertNotEqual(dispatch.usesRecommendedExecution, true)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
     }
 
     func testReviewShipNotificationIsDeliveredOnce() throws {
@@ -561,9 +950,13 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         conversationId: String = "chat",
         assistantMessage: String = "# Implementation Review\n\n## Verdict\n\nCHANGES_REQUESTED\n\n## Codex Instruction\n\nFix it.",
         codexConversationId: String = "codex-chat",
-        instruction: String = "Fix it.",
+        instruction: String? = "Fix it.",
         lineageDepth: Int = 1,
-        state: ChatGPTReviewDispatchState = .pending
+        state: ChatGPTReviewDispatchState = .pending,
+        verdict: String = "CHANGES_REQUESTED",
+        recommendedModelRole: String? = nil,
+        recommendedEffort: String? = nil,
+        usesRecommendedExecution: Bool? = false
     ) -> ChatGPTReviewDispatch {
         let context = projectContext ?? project.map {
             .init(id: $0.id, name: $0.name, path: $0.path)
@@ -571,10 +964,13 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         return ChatGPTReviewDispatch(
             schemaVersion: 1, sourceRunId: sourceRunId, conversationId: conversationId, reviewCapturedAt: date,
             assistantMessage: assistantMessage,
-            verdict: "CHANGES_REQUESTED", instruction: instruction, followUpRunId: followUpRunId,
+            verdict: verdict, instruction: instruction, followUpRunId: followUpRunId,
             parentRunId: followUpRunId == nil ? nil : sourceRunId, project: context,
             codexConversationId: codexConversationId, modelRole: "terra",
-            modelId: "gpt-5.6-terra", effort: "low", lineageDepth: lineageDepth,
+            modelId: "gpt-5.6-terra", effort: "low",
+            recommendedModelRole: recommendedModelRole, recommendedEffort: recommendedEffort,
+            usesRecommendedExecution: usesRecommendedExecution,
+            lineageDepth: lineageDepth,
             state: state, createdAt: date, updatedAt: date, terminalReason: nil
         )
     }
@@ -631,6 +1027,30 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         )
     }
 
+    private func changesRequestedMessage(model: String, effort: String) -> String {
+        """
+        # Implementation Review
+        ## Verdict
+        CHANGES_REQUESTED
+        ## Codex Execution
+        Model: \(model)
+        Reasoning: \(effort)
+        ## Codex Instruction
+        Fix it.
+        """
+    }
+
+    private func routingConfig() -> CodexConfig {
+        CodexConfig(
+            models: [
+                CodexModel(role: "terra", modelId: "gpt-5.6-terra"),
+                CodexModel(role: "sol", modelId: "gpt-5.6-sol")
+            ],
+            reasoningEfforts: ["low", "high"],
+            defaultSandbox: "workspace-write"
+        )
+    }
+
     private func persistEvidence(runId: String, message: String, harness: Harness) throws {
         let handoff = RunResultHandoff(
             runId: runId,
@@ -662,6 +1082,57 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             assistantMessage: message,
             capturedAt: date
         ))
+    }
+
+    private func persistFollowUpHandoff(
+        runId: String,
+        modelRole: String,
+        modelId: String,
+        effort: String,
+        conversationId: String = "chat",
+        project: RunResultHandoff.ProjectContext? = nil,
+        harness: Harness
+    ) throws {
+        try harness.handoffStore.persist(RunResultHandoff(
+            runId: runId,
+            outcome: .completed,
+            project: project ?? .init(
+                id: harness.project.id,
+                name: harness.project.name,
+                path: harness.project.path
+            ),
+            sourceChat: .init(
+                url: "https://chatgpt.com/c/\(conversationId)",
+                conversationId: conversationId
+            ),
+            execution: .init(
+                worker: WidgetViewModel.RunWorker.officialVSCode.rawValue,
+                modelRole: modelRole,
+                modelId: modelId,
+                effort: effort,
+                codexConversationId: "codex-chat",
+                codexTurnId: "turn-follow-up"
+            ),
+            result: .init(finalMessage: "follow-up result", errorMessage: nil),
+            startedAt: date,
+            finishedAt: date
+        ))
+    }
+
+    private func restoredViewModel(_ harness: Harness, recorder: EventRecorder) -> WidgetViewModel {
+        WidgetViewModel(
+            store: SavedProjectStore(fileURL: harness.root.appendingPathComponent("saved-projects.json")),
+            map: ChatProjectMap(fileURL: harness.root.appendingPathComponent("chat-map.json")),
+            defaults: UserDefaults(suiteName: harness.suiteName)!,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: SilentNotifications(),
+            handoffStore: harness.handoffStore,
+            reviewStore: harness.reviewStore,
+            reviewDispatchStore: harness.dispatchStore,
+            now: { self.date },
+            reviewFollowupSender: recorder.send
+        )
     }
 
     private func assertCrossStoreMismatchBlocks(_ harness: Harness) {

@@ -10,6 +10,11 @@ enum ApprovalHandling: String, Equatable {
     case autoApprove
 }
 
+enum FollowUpRoutingMode: String, Equatable {
+    case manual
+    case chatGPT
+}
+
 @MainActor
 final class WidgetViewModel: ObservableObject {
     private static let dismissedReviewWarningsKey = "aiflow.dismissed-review-warnings"
@@ -36,6 +41,7 @@ final class WidgetViewModel: ObservableObject {
     @Published private(set) var reviewAutomationBlockReason: String?
     @Published private(set) var attentionPreferences: AiflowAttentionPreferences
     @Published private(set) var approvalHandling: ApprovalHandling
+    @Published private(set) var followUpRoutingMode: FollowUpRoutingMode
 
     @Published var selectedModelRole: String {
         didSet { defaults.set(selectedModelRole, forKey: Self.modelKey) }
@@ -112,6 +118,7 @@ final class WidgetViewModel: ObservableObject {
     private static let modelKey = "aiflow.model"
     private static let effortKey = "aiflow.effort"
     private static let approvalHandlingKey = "aiflow.approval-handling"
+    private static let followUpRoutingModeKey = "aiflow.follow-up-routing"
 
     init(
         cli: AiflowCLI = .shared,
@@ -153,6 +160,9 @@ final class WidgetViewModel: ObservableObject {
         self.approvalResponseSender = approvalResponseSender
         self.approvalHandling = ApprovalHandling(
             rawValue: defaults.string(forKey: Self.approvalHandlingKey) ?? ""
+        ) ?? .manual
+        self.followUpRoutingMode = FollowUpRoutingMode(
+            rawValue: defaults.string(forKey: Self.followUpRoutingModeKey) ?? ""
         ) ?? .manual
         self.selectedModelRole =
             defaults.string(forKey: Self.modelKey) ?? CodexConfig.defaultModelRole
@@ -306,6 +316,11 @@ final class WidgetViewModel: ObservableObject {
     func setApprovalHandling(_ handling: ApprovalHandling) {
         approvalHandling = handling
         defaults.set(handling.rawValue, forKey: Self.approvalHandlingKey)
+    }
+
+    func setFollowUpRoutingMode(_ mode: FollowUpRoutingMode) {
+        followUpRoutingMode = mode
+        defaults.set(mode.rawValue, forKey: Self.followUpRoutingModeKey)
     }
 
     private func updateAttentionPreferences(_ preferences: AiflowAttentionPreferences) {
@@ -578,7 +593,7 @@ final class WidgetViewModel: ObservableObject {
               resolvedModelId != nil,
               let evidence = try? correlatedReviewEvidence(for: record.sourceRunId),
               let parsed = try? ChatGPTReviewParser.parse(evidence.review),
-              case .changesRequested(let instruction) = parsed,
+              case .changesRequested(let instruction, _) = parsed,
               let project = store.project(withPath: evidence.handoff.project.path),
               project.id == evidence.handoff.project.id,
               project.name == evidence.handoff.project.name,
@@ -1032,7 +1047,7 @@ final class WidgetViewModel: ObservableObject {
                 review: review, handoff: handoff, verdict: "SHIP", instruction: nil,
                 state: .stopped, reason: "ChatGPT review shipped the result"
             )
-        case .changesRequested(let instruction):
+        case let .changesRequested(instruction, recommendation):
             guard handoff.execution.worker == RunWorker.officialVSCode.rawValue,
                   let codexConversationId = handoff.execution.codexConversationId,
                   !codexConversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1041,7 +1056,8 @@ final class WidgetViewModel: ObservableObject {
                   project.name == handoff.project.name else {
                 try persistReviewDispatch(
                     review: review, handoff: handoff, verdict: "CHANGES_REQUESTED", instruction: instruction,
-                    state: .manualAttention, reason: "the original official worker/project/conversation is unavailable"
+                    state: .manualAttention, reason: "the original official worker/project/conversation is unavailable",
+                    recommendation: recommendation
                 )
                 return
             }
@@ -1052,9 +1068,30 @@ final class WidgetViewModel: ObservableObject {
                 try persistReviewDispatch(
                     review: review, handoff: handoff, verdict: "CHANGES_REQUESTED", instruction: instruction,
                     state: .manualAttention, reason: "automatic follow-up limit reached",
-                    lineageDepth: parentDepth
+                    lineageDepth: parentDepth, recommendation: recommendation
                 )
                 return
+            }
+            if followUpRoutingMode == .chatGPT {
+                guard let recommendation else {
+                    try persistReviewDispatch(
+                        review: review, handoff: handoff, verdict: "CHANGES_REQUESTED", instruction: instruction,
+                        state: .manualAttention,
+                        reason: "ChatGPT routing requires Codex Execution evidence."
+                    )
+                    return
+                }
+                guard let config,
+                      config.model(forRole: recommendation.modelRole) != nil,
+                      config.reasoningEfforts.contains(recommendation.effort) else {
+                    try persistReviewDispatch(
+                        review: review, handoff: handoff, verdict: "CHANGES_REQUESTED", instruction: instruction,
+                        state: .manualAttention,
+                        reason: "ChatGPT routing recommendation is not supported by current Aiflow configuration.",
+                        recommendation: recommendation
+                    )
+                    return
+                }
             }
             let dispatch = ChatGPTReviewDispatch(
                 schemaVersion: ChatGPTReviewDispatch.currentSchemaVersion,
@@ -1071,6 +1108,9 @@ final class WidgetViewModel: ObservableObject {
                 modelRole: handoff.execution.modelRole,
                 modelId: handoff.execution.modelId,
                 effort: handoff.execution.effort,
+                recommendedModelRole: recommendation?.modelRole,
+                recommendedEffort: recommendation?.effort,
+                usesRecommendedExecution: followUpRoutingMode == .chatGPT,
                 lineageDepth: depth,
                 state: .pending,
                 createdAt: now(),
@@ -1088,7 +1128,8 @@ final class WidgetViewModel: ObservableObject {
 
     private func persistReviewDispatch(
         review: ChatGPTReview, handoff: RunResultHandoff, verdict: String, instruction: String?,
-        state: ChatGPTReviewDispatchState, reason: String, lineageDepth: Int? = nil
+        state: ChatGPTReviewDispatchState, reason: String, lineageDepth: Int? = nil,
+        recommendation: ChatGPTReviewExecutionRecommendation? = nil
     ) throws {
         let resolvedDepth: Int
         if let lineageDepth {
@@ -1111,6 +1152,9 @@ final class WidgetViewModel: ObservableObject {
             modelRole: handoff.execution.modelRole,
             modelId: handoff.execution.modelId,
             effort: handoff.execution.effort,
+            recommendedModelRole: recommendation?.modelRole,
+            recommendedEffort: recommendation?.effort,
+            usesRecommendedExecution: false,
             lineageDepth: resolvedDepth,
             state: state,
             createdAt: now(),
@@ -1137,7 +1181,10 @@ final class WidgetViewModel: ObservableObject {
             return
         }
 
-        let evidence: (followUpRunId: String, instruction: String, project: SavedProject)
+        let evidence: (
+            followUpRunId: String, instruction: String, project: SavedProject,
+            modelRole: String, modelId: String, effort: String
+        )
         do {
             evidence = try validatedExecutionEvidence(for: dispatch)
         } catch ChatGPTReviewAutomationError.evidenceMismatch(let reason) {
@@ -1181,7 +1228,7 @@ final class WidgetViewModel: ObservableObject {
         activeHandoffContext = ActiveRunHandoffContext(
             runId: evidence.followUpRunId, project: evidence.project,
             sourceChat: .init(url: "https://chatgpt.com/c/\(dispatch.conversationId)", conversationId: dispatch.conversationId),
-            modelRole: dispatch.modelRole, modelId: dispatch.modelId, effort: dispatch.effort,
+            modelRole: evidence.modelRole, modelId: evidence.modelId, effort: evidence.effort,
             startedAt: now(), codexConversationId: dispatch.codexConversationId, codexTurnId: nil
         )
 
@@ -1189,7 +1236,7 @@ final class WidgetViewModel: ObservableObject {
             runId: evidence.followUpRunId, parentRunId: dispatch.sourceRunId,
             project: evidence.project,
             conversationId: dispatch.codexConversationId, prompt: prompt,
-            model: dispatch.modelRole, effort: dispatch.effort
+            model: evidence.modelRole, effort: evidence.effort
         )
         let sent = reviewFollowupSender?(event) ?? bridge?.sendToWorker(event) ?? false
         if !sent {
@@ -1200,7 +1247,10 @@ final class WidgetViewModel: ObservableObject {
 
     private func validatedExecutionEvidence(
         for dispatch: ChatGPTReviewDispatch
-    ) throws -> (followUpRunId: String, instruction: String, project: SavedProject) {
+    ) throws -> (
+        followUpRunId: String, instruction: String, project: SavedProject,
+        modelRole: String, modelId: String, effort: String
+    ) {
         guard let review = try reviewStore.validatedReview(runId: dispatch.sourceRunId),
               let handoff = try handoffStore.validatedDeliveredHandoff(
                 runId: dispatch.sourceRunId
@@ -1234,14 +1284,33 @@ final class WidgetViewModel: ObservableObject {
             )
         }
 
-        guard case .changesRequested(let parsedInstruction) = try ChatGPTReviewParser.parse(review),
+        guard case let .changesRequested(parsedInstruction, recommendation) = try ChatGPTReviewParser.parse(review),
               dispatch.verdict == "CHANGES_REQUESTED",
-              dispatch.instruction == parsedInstruction else {
+              dispatch.instruction == parsedInstruction,
+              dispatch.recommendedModelRole == recommendation?.modelRole,
+              dispatch.recommendedEffort == recommendation?.effort else {
             throw ChatGPTReviewAutomationError.evidenceMismatch(
                 "dispatch instruction no longer matches the immutable review"
             )
         }
-        return (followUpRunId, parsedInstruction, project)
+        if dispatch.usesRecommendedExecution == true {
+            guard let recommendation,
+                  let config,
+                  let model = config.model(forRole: recommendation.modelRole),
+                  config.reasoningEfforts.contains(recommendation.effort) else {
+                throw ChatGPTReviewAutomationError.evidenceMismatch(
+                    "persisted ChatGPT routing recommendation is no longer supported"
+                )
+            }
+            return (
+                followUpRunId, parsedInstruction, project,
+                recommendation.modelRole, model.modelId, recommendation.effort
+            )
+        }
+        return (
+            followUpRunId, parsedInstruction, project,
+            dispatch.modelRole, dispatch.modelId, dispatch.effort
+        )
     }
 
     private func moveToManualAttention(
@@ -1347,7 +1416,7 @@ final class WidgetViewModel: ObservableObject {
     func copyReviewInstruction(_ record: ReviewLoopReadModel.Record) {
         do {
             let evidence = try correlatedReviewEvidence(for: record.sourceRunId)
-            guard case .changesRequested(let instruction) = try ChatGPTReviewParser.parse(evidence.review)
+            guard case .changesRequested(let instruction, _) = try ChatGPTReviewParser.parse(evidence.review)
             else {
                 notice = "No follow-up instruction is available for this review."
                 return
@@ -1366,7 +1435,8 @@ final class WidgetViewModel: ObservableObject {
         try ReviewLoopEvidenceValidator.validate(
             reviews: reviews,
             dispatches: dispatches,
-            handoffForRunId: { try handoffStore.validatedDeliveredHandoff(runId: $0) }
+            handoffForRunId: { try handoffStore.validatedDeliveredHandoff(runId: $0) },
+            followUpHandoffForRunId: { try handoffStore.validatedHandoff(runId: $0) }
         )
         return (reviews, dispatches)
     }
@@ -1379,7 +1449,18 @@ final class WidgetViewModel: ObservableObject {
               let handoff = try handoffStore.validatedDeliveredHandoff(runId: sourceRunId) else {
             throw ReviewLoopEvidenceError.inconsistentEvidence
         }
-        try ReviewLoopEvidenceValidator.validate(review: review, dispatch: dispatch, handoff: handoff)
+        let followUpHandoff: RunResultHandoff?
+        if let followUpRunId = dispatch.followUpRunId {
+            followUpHandoff = try handoffStore.validatedHandoff(runId: followUpRunId)
+        } else {
+            followUpHandoff = nil
+        }
+        try ReviewLoopEvidenceValidator.validate(
+            review: review,
+            dispatch: dispatch,
+            handoff: handoff,
+            followUpHandoff: followUpHandoff
+        )
         return (review, dispatch, handoff)
     }
 

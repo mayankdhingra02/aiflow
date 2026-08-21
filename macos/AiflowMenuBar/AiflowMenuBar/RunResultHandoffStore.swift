@@ -127,22 +127,44 @@ final class RunResultHandoffStore {
         guard isValidRunId(runId) else {
             throw RunResultHandoffStoreError.invalidRunId
         }
-        let url = deliveredFileURL(for: runId)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try validatedHandoff(
+            at: deliveredFileURL(for: runId),
+            runId: runId,
+            unreadableError: .unreadableDeliveredRecord,
+            invalidError: .invalidDeliveredRecord
+        )
+    }
 
-        let handoff: RunResultHandoff
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            handoff = try decoder.decode(RunResultHandoff.self, from: Data(contentsOf: url))
-        } catch {
-            throw RunResultHandoffStoreError.unreadableDeliveredRecord
+    /// Reads immutable terminal evidence across the pending-to-delivered move without silently
+    /// accepting corruption in either location. This is for evidence validation only; delivery
+    /// ownership remains with `markDelivered`.
+    func validatedHandoff(runId: String) throws -> RunResultHandoff? {
+        guard isValidRunId(runId) else {
+            throw RunResultHandoffStoreError.invalidRunId
         }
-        guard handoff.schemaVersion == RunResultHandoff.currentSchemaVersion,
-              handoff.runId == runId else {
-            throw RunResultHandoffStoreError.invalidDeliveredRecord
+        let pending = try validatedHandoff(
+            at: pendingFileURL(for: runId),
+            runId: runId,
+            unreadableError: .unreadableDeliveredRecord,
+            invalidError: .invalidDeliveredRecord
+        )
+        let delivered = try validatedHandoff(
+            at: deliveredFileURL(for: runId),
+            runId: runId,
+            unreadableError: .unreadableDeliveredRecord,
+            invalidError: .invalidDeliveredRecord
+        )
+
+        switch (pending, delivered) {
+        case (nil, nil):
+            return nil
+        case let (handoff?, nil), let (nil, handoff?):
+            return handoff
+        case let (pending?, delivered?) where pending == delivered:
+            return delivered
+        case (.some, .some):
+            throw RunResultHandoffStoreError.conflictingDeliveredRecord
         }
-        return handoff
     }
 
     func pendingHandoffs() -> [RunResultHandoff] {
@@ -270,6 +292,29 @@ final class RunResultHandoffStore {
             RunResultHandoff.self,
             from: data
         )
+    }
+
+    private func validatedHandoff(
+        at url: URL,
+        runId: String,
+        unreadableError: RunResultHandoffStoreError,
+        invalidError: RunResultHandoffStoreError
+    ) throws -> RunResultHandoff? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        let handoff: RunResultHandoff
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            handoff = try decoder.decode(RunResultHandoff.self, from: Data(contentsOf: url))
+        } catch {
+            throw unreadableError
+        }
+        guard handoff.schemaVersion == RunResultHandoff.currentSchemaVersion,
+              handoff.runId == runId else {
+            throw invalidError
+        }
+        return handoff
     }
 
     private func ensureDirectoryPermissions(at directory: URL) throws {

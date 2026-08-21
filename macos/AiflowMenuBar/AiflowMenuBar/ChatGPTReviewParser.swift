@@ -1,8 +1,16 @@
 import Foundation
 
+struct ChatGPTReviewExecutionRecommendation: Equatable {
+    let modelRole: String
+    let effort: String
+}
+
 enum ParsedChatGPTReview: Equatable {
     case ship
-    case changesRequested(instruction: String)
+    case changesRequested(
+        instruction: String,
+        executionRecommendation: ChatGPTReviewExecutionRecommendation?
+    )
 }
 
 enum ChatGPTReviewParserError: Error, Equatable {
@@ -14,6 +22,7 @@ enum ChatGPTReviewParserError: Error, Equatable {
     case contradictoryVerdict
     case missingInstruction
     case oversizedInstruction
+    case malformedExecution
 }
 
 enum ChatGPTReviewParser {
@@ -44,11 +53,10 @@ enum ChatGPTReviewParser {
                 : ChatGPTReviewParserError.duplicateVerdict
         }
 
-        let instructionIndexes = lines.indices.filter {
-            lines[$0] == "## Codex Instruction" || lines[$0] == "Codex Instruction"
-        }
+        let executionIndexes = lines.indices.filter { isExecutionHeading(lines[$0]) }
+        let instructionIndexes = lines.indices.filter { isInstructionHeading(lines[$0]) }
         guard !lines.dropFirst().contains(where: {
-            $0.hasPrefix("## ") && $0 != "## Verdict" && $0 != "## Codex Instruction"
+            $0.hasPrefix("## ") && !isKnownHeading($0)
         }) else {
             throw ChatGPTReviewParserError.malformedHeading
         }
@@ -58,7 +66,7 @@ enum ChatGPTReviewParser {
 
         let verdictIndex = verdictIndexes[0]
         let nextHeading = lines.indices.drop(while: { $0 <= verdictIndex }).first {
-            lines[$0] == "## Codex Instruction" || lines[$0] == "Codex Instruction"
+            isExecutionHeading(lines[$0]) || isInstructionHeading(lines[$0])
         }
         let verdictEnd = nextHeading ?? lines.count
         let verdictLines = lines[(verdictIndex + 1)..<verdictEnd]
@@ -78,12 +86,15 @@ enum ChatGPTReviewParser {
         }
 
         if verdict == "SHIP" {
-            guard instructionIndexes.isEmpty else {
+            guard executionIndexes.isEmpty, instructionIndexes.isEmpty else {
                 throw ChatGPTReviewParserError.malformedHeading
             }
             return .ship
         }
 
+        guard executionIndexes.count <= 1 else {
+            throw ChatGPTReviewParserError.malformedHeading
+        }
         guard instructionIndexes.count == 1 else {
             throw instructionIndexes.isEmpty
                 ? ChatGPTReviewParserError.missingInstruction
@@ -92,6 +103,18 @@ enum ChatGPTReviewParser {
         let instructionIndex = instructionIndexes[0]
         guard instructionIndex > verdictIndex else {
             throw ChatGPTReviewParserError.malformedHeading
+        }
+
+        let recommendation: ChatGPTReviewExecutionRecommendation?
+        if let executionIndex = executionIndexes.first {
+            guard verdictIndex < executionIndex, executionIndex < instructionIndex else {
+                throw ChatGPTReviewParserError.malformedHeading
+            }
+            recommendation = try parseExecution(
+                Array(lines[(executionIndex + 1)..<instructionIndex])
+            )
+        } else {
+            recommendation = nil
         }
 
         let instruction = lines[(instructionIndex + 1)..<lines.count]
@@ -107,6 +130,47 @@ enum ChatGPTReviewParser {
         guard instruction.lengthOfBytes(using: .utf8) <= maximumInstructionUTF8Bytes else {
             throw ChatGPTReviewParserError.oversizedInstruction
         }
-        return .changesRequested(instruction: instruction)
+        return .changesRequested(
+            instruction: instruction,
+            executionRecommendation: recommendation
+        )
+    }
+
+    private static func isKnownHeading(_ line: String) -> Bool {
+        line == "## Verdict" || line == "Verdict" || isExecutionHeading(line)
+            || isInstructionHeading(line)
+    }
+
+    private static func isExecutionHeading(_ line: String) -> Bool {
+        line == "## Codex Execution" || line == "Codex Execution"
+    }
+
+    private static func isInstructionHeading(_ line: String) -> Bool {
+        line == "## Codex Instruction" || line == "Codex Instruction"
+    }
+
+    private static func parseExecution(
+        _ rawLines: [String]
+    ) throws -> ChatGPTReviewExecutionRecommendation {
+        let lines = rawLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard lines.count == 2,
+              let modelRole = executionValue(in: lines[0], key: "Model:"),
+              let effort = executionValue(in: lines[1], key: "Reasoning:") else {
+            throw ChatGPTReviewParserError.malformedExecution
+        }
+        return ChatGPTReviewExecutionRecommendation(modelRole: modelRole, effort: effort)
+    }
+
+    private static func executionValue(in line: String, key: String) -> String? {
+        guard line.hasPrefix(key) else { return nil }
+        let value = String(line.dropFirst(key.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              value.lengthOfBytes(using: .utf8) <= 64,
+              !value.contains(where: { $0.isWhitespace }) else {
+            return nil
+        }
+        return value
     }
 }

@@ -219,7 +219,8 @@ struct MenuBarView: View {
     }
 
     private var selectorsSection: some View {
-        HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Model").font(.caption).foregroundStyle(.secondary)
                 Picker("", selection: $viewModel.selectedModelRole) {
@@ -233,6 +234,18 @@ struct MenuBarView: View {
                     ForEach(viewModel.efforts, id: \.self) {
                         Text(displayNameForEffort($0)).tag($0)
                     }
+                }
+                .labelsHidden()
+            }
+        }
+            HStack {
+                Text("Review follow-up routing").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { viewModel.followUpRoutingMode },
+                    set: { viewModel.setFollowUpRoutingMode($0) }
+                )) {
+                    Text("Manual").tag(FollowUpRoutingMode.manual)
+                    Text("ChatGPT").tag(FollowUpRoutingMode.chatGPT)
                 }
                 .labelsHidden()
             }

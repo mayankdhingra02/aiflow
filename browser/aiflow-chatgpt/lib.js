@@ -45,6 +45,10 @@ export function buildHandoffMessage(handoff) {
     handoff?.project?.name ?? "Unknown project";
   const worker =
     handoff?.execution?.worker ?? "unknown";
+  const modelRole =
+    handoff?.execution?.modelRole ?? "unknown";
+  const effort =
+    handoff?.execution?.effort ?? "unknown";
   const outcome =
     handoff?.outcome ?? "unknown";
 
@@ -69,6 +73,7 @@ export function buildHandoffMessage(handoff) {
     `Project: ${project}`,
     `Worker: ${worker}`,
     `Outcome: ${outcome}`,
+    `Previous Codex execution: Model: ${modelRole}; Reasoning: ${effort}`,
     "",
     resultText,
     "",
@@ -81,9 +86,19 @@ export function buildHandoffMessage(handoff) {
     "or",
     "CHANGES_REQUESTED",
     "",
-    "For CHANGES_REQUESTED, add exactly one section:",
+    "For CHANGES_REQUESTED, add these sections in exactly this order:",
+    "## Codex Execution",
+    "Model: <one allowed role>",
+    "Reasoning: <one allowed effort>",
     "## Codex Instruction",
-    "<one exact, bounded instruction for Codex>"
+    "<one exact, bounded instruction for Codex>",
+    "",
+    "Choose the least-expensive, lowest-reasoning configuration likely to complete the work reliably.",
+    "Allowed Model values: luna, terra, sol.",
+    "Allowed Reasoning values: low, medium, high, xhigh.",
+    "Do not explain the routing choice.",
+    "",
+    "For SHIP, include neither Codex Execution nor Codex Instruction.",
   ].join("\n");
 }
 

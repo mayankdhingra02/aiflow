@@ -25,6 +25,13 @@ struct ChatGPTReviewDispatch: Codable, Equatable, Identifiable {
     let modelRole: String
     let modelId: String
     let effort: String
+    /// Untrusted review recommendation preserved as immutable evidence. It is used only when
+    /// `usesRecommendedExecution` was selected while this dispatch was prepared.
+    let recommendedModelRole: String?
+    let recommendedEffort: String?
+    /// Nil is the backward-compatible representation for dispatch evidence created before
+    /// adaptive routing existed; only an explicit true permits recommendation-based execution.
+    let usesRecommendedExecution: Bool?
     let lineageDepth: Int
     var state: ChatGPTReviewDispatchState
     let createdAt: Date
@@ -248,6 +255,23 @@ final class ChatGPTReviewDispatchStore {
               value.lineageDepth <= 5 else {
             throw ChatGPTReviewDispatchStoreError.invalidRecord
         }
+        guard (value.recommendedModelRole == nil) == (value.recommendedEffort == nil),
+              value.usesRecommendedExecution != true || value.recommendedModelRole != nil else {
+            throw ChatGPTReviewDispatchStoreError.invalidRecord
+        }
+        if let role = value.recommendedModelRole,
+           let effort = value.recommendedEffort {
+            guard isBoundedExecutionValue(role), isBoundedExecutionValue(effort) else {
+                throw ChatGPTReviewDispatchStoreError.invalidRecord
+            }
+        }
+        if value.verdict != "CHANGES_REQUESTED" {
+            guard value.recommendedModelRole == nil,
+                  value.recommendedEffort == nil,
+                  value.usesRecommendedExecution != true else {
+                throw ChatGPTReviewDispatchStoreError.invalidRecord
+            }
+        }
         if let followUpRunId = value.followUpRunId {
             guard UUID(uuidString: followUpRunId) != nil,
                   value.verdict == "CHANGES_REQUESTED",
@@ -324,6 +348,9 @@ final class ChatGPTReviewDispatchStore {
             && left.modelRole == right.modelRole
             && left.modelId == right.modelId
             && left.effort == right.effort
+            && left.recommendedModelRole == right.recommendedModelRole
+            && left.recommendedEffort == right.recommendedEffort
+            && left.usesRecommendedExecution == right.usesRecommendedExecution
             && left.lineageDepth == right.lineageDepth
             && left.createdAt == right.createdAt
     }
@@ -338,5 +365,11 @@ final class ChatGPTReviewDispatchStore {
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path
         )
+    }
+
+    private func isBoundedExecutionValue(_ value: String) -> Bool {
+        !value.isEmpty
+            && value.lengthOfBytes(using: .utf8) <= 64
+            && !value.contains(where: { $0.isWhitespace })
     }
 }
