@@ -25,14 +25,18 @@ final class OfficialWorkerTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeViewModel() -> WidgetViewModel {
+    private func makeViewModel(
+        notifications: NotificationManaging? = nil,
+        attention: AttentionCoordinating? = nil
+    ) -> WidgetViewModel {
         WidgetViewModel(
             store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
             map: ChatProjectMap(fileURL: directory.appendingPathComponent("map.json")),
             defaults: defaults,
             detectChat: { nil },
             validateGit: { .repository(root: $0) },
-            notifications: SilentWorkerNotifications()
+            notifications: notifications ?? SilentWorkerNotifications(),
+            attention: attention
         )
     }
 
@@ -184,6 +188,33 @@ final class OfficialWorkerTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.runState, .failed(project: project, message: "thread_unavailable"))
+    }
+
+    func testOfficialTerminalReportsDeliverAttentionExactlyOnce() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        let attention = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        attention.attachPresenter(presenter)
+        let viewModel = makeViewModel(notifications: notifications, attention: attention)
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        viewModel.handleBridgeCommand(BridgeCommand(type: .workerCompleted, runId: "run-1"))
+        viewModel.handleBridgeCommand(BridgeCommand(type: .workerCompleted, runId: "run-1"))
+
+        XCTAssertEqual(notifications.events, [.codexCompleted(runId: "run-1", projectName: project.name)])
+        XCTAssertEqual(presenter.showCount, 1)
+    }
+
+    func testOfficialWorkerFailureDeliversAttentionExactlyOnce() {
+        let notifications = RecordingAttentionNotifications()
+        let attention = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        let viewModel = makeViewModel(notifications: notifications, attention: attention)
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        viewModel.handleBridgeCommand(BridgeCommand(type: .workerFailed, runId: "run-1"))
+        viewModel.handleBridgeCommand(BridgeCommand(type: .workerFailed, runId: "run-1"))
+
+        XCTAssertEqual(notifications.events, [.codexFailed(runId: "run-1", projectName: project.name)])
     }
 
     func testWorkerCancellationCancelsTheRun() {
@@ -386,6 +417,162 @@ final class OfficialWorkerTests: XCTestCase {
         XCTAssertEqual(command.runId, "r1")
         XCTAssertEqual(command.message, "ok")
         // There is no field for any of the smuggled keys, so they are simply dropped.
+    }
+}
+
+@MainActor
+final class AttentionCoordinatorTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "aiflow.tests.attention.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    func testDefaultsPersistAndMuteSuppressesBothChannels() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        coordinator.attachPresenter(presenter)
+        XCTAssertTrue(coordinator.preferences.systemNotificationsEnabled)
+        XCTAssertTrue(coordinator.preferences.autoShowWidgetEnabled)
+        XCTAssertFalse(coordinator.preferences.muted)
+
+        var preferences = coordinator.preferences
+        preferences.muted = true
+        coordinator.updatePreferences(preferences)
+        coordinator.deliver(.codexCompleted(runId: "run-1", projectName: "demo"))
+
+        XCTAssertTrue(notifications.events.isEmpty)
+        XCTAssertEqual(presenter.showCount, 0)
+        XCTAssertTrue(AttentionCoordinator(defaults: defaults, notifications: notifications).preferences.muted)
+
+        preferences.muted = false
+        coordinator.updatePreferences(preferences)
+        coordinator.deliver(.codexCompleted(runId: "run-2", projectName: "demo"))
+        XCTAssertEqual(notifications.events, [.codexCompleted(runId: "run-2", projectName: "demo")])
+        XCTAssertEqual(presenter.showCount, 1)
+    }
+
+    func testPreferencesIndependentlyControlNotificationAndPopup() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        coordinator.attachPresenter(presenter)
+
+        var preferences = coordinator.preferences
+        preferences.systemNotificationsEnabled = false
+        coordinator.updatePreferences(preferences)
+        coordinator.deliver(.codexCompleted(runId: "run-1", projectName: "demo"))
+        XCTAssertTrue(notifications.events.isEmpty)
+        XCTAssertEqual(presenter.showCount, 1)
+
+        presenter.isWidgetVisible = false
+        preferences.systemNotificationsEnabled = true
+        preferences.autoShowWidgetEnabled = false
+        coordinator.updatePreferences(preferences)
+        coordinator.deliver(.codexFailed(runId: "run-2", projectName: "demo"))
+        XCTAssertEqual(notifications.events, [.codexFailed(runId: "run-2", projectName: "demo")])
+        XCTAssertEqual(presenter.showCount, 1)
+
+        preferences.systemNotificationsEnabled = false
+        coordinator.updatePreferences(preferences)
+        coordinator.deliver(.codexCancelled(runId: "run-3", projectName: "demo"))
+        XCTAssertEqual(notifications.events, [.codexFailed(runId: "run-2", projectName: "demo")])
+        XCTAssertEqual(presenter.showCount, 1)
+    }
+
+    func testPersistentReviewDeduplicationAndVisibleWidgetDoNotSpam() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        presenter.isWidgetVisible = true
+        let first = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        first.attachPresenter(presenter)
+        let event = AiflowAttentionEvent.reviewShipped(sourceRunId: "source-1", projectName: "demo")
+        first.deliver(event)
+        AttentionCoordinator(defaults: defaults, notifications: notifications).deliver(event)
+
+        XCTAssertTrue(notifications.events.isEmpty)
+        XCTAssertEqual(presenter.showCount, 0)
+    }
+
+    func testCompletionDeduplicationUsesRunID() {
+        let notifications = RecordingAttentionNotifications()
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: notifications)
+
+        coordinator.deliver(.codexCompleted(runId: "run-1", projectName: "demo"))
+        coordinator.deliver(.codexCompleted(runId: "run-1", projectName: "demo"))
+        coordinator.deliver(.codexCompleted(runId: "run-2", projectName: "demo"))
+
+        XCTAssertEqual(notifications.events, [
+            .codexCompleted(runId: "run-1", projectName: "demo"),
+            .codexCompleted(runId: "run-2", projectName: "demo"),
+        ])
+    }
+
+    func testPresenterReceivesOnlyOneRequestAfterItBecomesVisible() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        coordinator.attachPresenter(presenter)
+
+        coordinator.deliver(.codexCompleted(runId: "run-1", projectName: "demo"))
+        coordinator.deliver(.codexFailed(runId: "run-2", projectName: "demo"))
+
+        XCTAssertEqual(presenter.showCount, 1)
+    }
+
+    func testMutePreservesUnderlyingChannelPreferences() {
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: RecordingAttentionNotifications())
+        var preferences = coordinator.preferences
+        preferences.autoShowWidgetEnabled = false
+        preferences.muted = true
+        coordinator.updatePreferences(preferences)
+        preferences.muted = false
+        coordinator.updatePreferences(preferences)
+
+        XCTAssertTrue(coordinator.preferences.systemNotificationsEnabled)
+        XCTAssertFalse(coordinator.preferences.autoShowWidgetEnabled)
+        XCTAssertFalse(coordinator.preferences.muted)
+    }
+
+    func testNotificationTapOnlyRequestsWidgetPresentation() {
+        var presentationRequests = 0
+        AiflowWidgetPresentation.show = { presentationRequests += 1 }
+        defer { AiflowWidgetPresentation.show = nil }
+
+        NotificationManager.presentWidgetForNotificationTap()
+
+        XCTAssertEqual(presentationRequests, 1)
+    }
+}
+
+@MainActor
+private final class RecordingAttentionNotifications: NotificationManaging {
+    var events: [AiflowAttentionEvent] = []
+    func prepareForRun() async -> Bool { true }
+    func sendApproval(for request: ApprovalRequest) {}
+    func sendQuestion(for question: UserQuestion) {}
+    func sendCompletion(for project: SavedProject) {}
+    func sendFailure(for project: SavedProject?) {}
+    func send(attentionEvent event: AiflowAttentionEvent) { events.append(event) }
+    func removePendingRequest(id: CodexRequestID) {}
+}
+
+@MainActor
+private final class RecordingAttentionPresenter: AttentionWidgetPresenting {
+    var isWidgetVisible = false
+    var showCount = 0
+    func showWidgetIfNeeded() {
+        showCount += 1
+        isWidgetVisible = true
     }
 }
 

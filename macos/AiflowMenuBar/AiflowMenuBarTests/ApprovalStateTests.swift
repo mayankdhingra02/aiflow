@@ -421,6 +421,7 @@ final class ApprovalStateTests: XCTestCase {
         var questions: [UserQuestion] = []
         var completions: [SavedProject] = []
         var failures: [SavedProject?] = []
+        var attentionEvents: [AiflowAttentionEvent] = []
         var removed: [Int] = []
         var authorization = true
 
@@ -429,6 +430,7 @@ final class ApprovalStateTests: XCTestCase {
         func sendQuestion(for question: UserQuestion) { questions.append(question) }
         func sendCompletion(for project: SavedProject) { completions.append(project) }
         func sendFailure(for project: SavedProject?) { failures.append(project) }
+        func send(attentionEvent: AiflowAttentionEvent) { attentionEvents.append(attentionEvent) }
         func removePendingRequest(id: CodexRequestID) { if case .integer(let value) = id { removed.append(value) } }
     }
 
@@ -632,7 +634,7 @@ final class ApprovalStateTests: XCTestCase {
             .approvalRequested(id: .integer(4), kind: .permissions, summary: "Network", detail: nil, permissionProfile: nil),
             project: project)
 
-        XCTAssertEqual(notifications.approvals.map(\.id), [.integer(3), .integer(4)])
+        XCTAssertEqual(notifications.attentionEvents.count, 2)
         XCTAssertEqual(notifications.removed, [3])
     }
 
@@ -646,7 +648,24 @@ final class ApprovalStateTests: XCTestCase {
             .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
             project: project)
 
-        XCTAssertTrue(notifications.approvals.isEmpty)
+        XCTAssertTrue(notifications.attentionEvents.isEmpty)
+    }
+
+    func testPopoverDismissalAllowsAttentionForANewRequest() {
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications)
+        viewModel.enterRunningForTesting(project)
+        viewModel.popoverDidBecomeVisible()
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(3), kind: .commandExecution, summary: "npm i", detail: nil, permissionProfile: nil),
+            project: project)
+
+        viewModel.popoverDidBecomeHidden()
+        viewModel.handleEventForTesting(
+            .approvalRequested(id: .integer(4), kind: .permissions, summary: "Network", detail: nil, permissionProfile: nil),
+            project: project)
+
+        XCTAssertEqual(notifications.attentionEvents.count, 1)
     }
 
     func testDisabledNotificationsDoNotStopApprovalState() {
@@ -669,13 +688,13 @@ final class ApprovalStateTests: XCTestCase {
         let completed = makeViewModel(notifications: notifications)
         completed.enterRunningForTesting(project)
         completed.handleEventForTesting(.finished, project: project)
-        XCTAssertEqual(notifications.completions, [project])
+        XCTAssertEqual(notifications.attentionEvents.count, 1)
 
         let failed = makeViewModel(notifications: notifications)
         failed.enterRunningForTesting(project)
         failed.popoverDidBecomeVisible()
         failed.handleEventForTesting(.failed("boom"), project: project)
-        XCTAssertTrue(notifications.failures.isEmpty)
+        XCTAssertEqual(notifications.attentionEvents.count, 1)
     }
 
     // MARK: - Graceful cancellation

@@ -346,6 +346,19 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(notifications.shipProjects, [harness.project.name])
     }
 
+    func testChangesRequestedAttentionIsDeliveredOnce() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.reconcileReviewsForTesting()
+
+        XCTAssertEqual(notifications.changesRequestedProjects, [harness.project.name])
+    }
+
     func testManualAttentionNotificationAndRecheckNeverResendAmbiguousDispatch() throws {
         let notifications = RecordingNotifications()
         let harness = try makeHarness(notifications: notifications)
@@ -701,6 +714,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
 
     private final class RecordingNotifications: NotificationManaging {
         var shipProjects: [String] = []
+        var changesRequestedProjects: [String] = []
         var manualAttentionProjects: [String] = []
         var blockReasons: [String] = []
 
@@ -709,6 +723,15 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         func sendQuestion(for question: UserQuestion) {}
         func sendCompletion(for project: SavedProject) {}
         func sendFailure(for project: SavedProject?) {}
+        func send(attentionEvent event: AiflowAttentionEvent) {
+            switch event {
+            case let .reviewShipped(_, projectName): shipProjects.append(projectName)
+            case let .reviewChangesRequested(_, projectName): changesRequestedProjects.append(projectName)
+            case let .reviewManualAttention(_, projectName, _): manualAttentionProjects.append(projectName)
+            case let .reviewAutomationBlocked(reason): blockReasons.append(reason)
+            default: break
+            }
+        }
         func removePendingRequest(id: CodexRequestID) {}
         func sendReviewShipped(projectName: String) { shipProjects.append(projectName) }
         func sendReviewNeedsAttention(projectName: String, reason: String) {
