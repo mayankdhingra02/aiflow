@@ -52,6 +52,8 @@ struct MenuBarView: View {
                 Divider()
                 reviewLoopSection
                 Divider()
+                approvalSection
+                Divider()
                 alertsSection
 
             case .confirmingRun(let project):
@@ -391,6 +393,25 @@ struct MenuBarView: View {
                 Button("Mute") { viewModel.setAttentionMuted(true) }
                     .buttonStyle(.borderless)
             }
+        }
+    }
+
+    private var approvalSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Approval").font(.caption).foregroundStyle(.secondary)
+            Picker(
+                "Approval handling",
+                selection: Binding(
+                    get: { viewModel.approvalHandling },
+                    set: { viewModel.setApprovalHandling($0) }
+                )
+            ) {
+                Text("Manual").tag(ApprovalHandling.manual)
+                Text("Auto-approve").tag(ApprovalHandling.autoApprove)
+            }
+            .pickerStyle(.segmented)
+            Text(viewModel.approvalHandlingDescription)
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
         }
     }
 

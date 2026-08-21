@@ -453,7 +453,10 @@ final class ApprovalStateTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeViewModel(notifications: MockNotifications? = nil) -> WidgetViewModel {
+    private func makeViewModel(
+        notifications: MockNotifications? = nil,
+        approvalResponseSender: ((ApprovalRequest, Bool) -> Void)? = nil
+    ) -> WidgetViewModel {
         let notificationManager = notifications ?? MockNotifications()
         return WidgetViewModel(
             store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
@@ -461,11 +464,157 @@ final class ApprovalStateTests: XCTestCase {
             defaults: defaults,
             detectChat: { nil },
             validateGit: { .repository(root: $0) },
-            notifications: notificationManager
+            notifications: notificationManager,
+            approvalResponseSender: approvalResponseSender
         )
     }
 
     private let project = SavedProject(name: "ef", path: "/repos/ef")
+
+    func testApprovalHandlingDefaultsToManualAndPersistsIndependentlyOfMute() {
+        let viewModel = makeViewModel()
+        XCTAssertEqual(viewModel.approvalHandling, .manual)
+
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.setAttentionMuted(true)
+
+        let restored = makeViewModel()
+        XCTAssertEqual(restored.approvalHandling, .autoApprove)
+        XCTAssertTrue(restored.attentionPreferences.muted)
+    }
+
+    func testAutoApproveSendsOneExactLegacyCommandDecisionAndResumesOnResolution() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications) { request, allow in
+            decisions.append((request, allow))
+        }
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+
+        let event = CodexSessionEvent.approvalRequested(
+            id: .integer(7), kind: .commandExecution, summary: "npm i", detail: nil,
+            permissionProfile: nil)
+        viewModel.handleEventForTesting(event, project: project)
+        viewModel.handleEventForTesting(event, project: project)
+
+        XCTAssertEqual(decisions.count, 1)
+        XCTAssertEqual(decisions.first?.0.id, .integer(7))
+        XCTAssertEqual(decisions.first?.0.kind, .commandExecution)
+        XCTAssertEqual(decisions.first?.1, true)
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(7)))
+        XCTAssertTrue(notifications.attentionEvents.isEmpty)
+
+        viewModel.handleEventForTesting(.requestResolved(.integer(6)), project: project)
+        XCTAssertEqual(viewModel.runState, .respondingToRequest(.integer(7)))
+        viewModel.handleEventForTesting(.requestResolved(.integer(7)), project: project)
+        XCTAssertEqual(viewModel.runState, .running(project))
+    }
+
+    func testAutoApprovePreservesTheExactPermissionProfile() throws {
+        var approved: ApprovalRequest?
+        let viewModel = makeViewModel { request, _ in approved = request }
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+        let profile = try JSONSerialization.data(withJSONObject: ["network": true])
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(8), kind: .permissions, summary: "Network", detail: nil,
+                permissionProfile: profile), project: project)
+
+        let response = try XCTUnwrap(CodexProtocol.approvalResponse(try XCTUnwrap(approved), allow: true))
+        let permissions = ((response["result"] as? [String: Any])?["permissions"] as? [String: Bool])
+        XCTAssertEqual(permissions, ["network": true])
+    }
+
+    func testAutoApproveAcceptsFileChangeOnce() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let viewModel = makeViewModel { request, allow in decisions.append((request, allow)) }
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+        let event = CodexSessionEvent.approvalRequested(
+            id: .integer(10), kind: .fileChange, summary: "edit README", detail: nil,
+            permissionProfile: nil)
+
+        viewModel.handleEventForTesting(event, project: project)
+        viewModel.handleEventForTesting(event, project: project)
+
+        XCTAssertEqual(decisions.count, 1)
+        XCTAssertEqual(decisions.first?.0.kind, .fileChange)
+        XCTAssertEqual(decisions.first?.1, true)
+    }
+
+    func testAutoApproveDoesNotApproveALateRequestWhileCancelling() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let viewModel = makeViewModel { request, allow in decisions.append((request, allow)) }
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+        viewModel.cancelRun()
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(11), kind: .commandExecution, summary: "late command", detail: nil,
+                permissionProfile: nil),
+            project: project)
+
+        XCTAssertTrue(decisions.isEmpty)
+        XCTAssertEqual(viewModel.runState, .cancelling(project))
+    }
+
+    func testAutoApproveNeverAnswersQuestionsAndRaisesManualActionAttention() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let notifications = MockNotifications()
+        let viewModel = makeViewModel(notifications: notifications) { request, allow in
+            decisions.append((request, allow))
+        }
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+
+        viewModel.handleEventForTesting(
+            .inputRequested(id: .integer(9), questions: [question("api")]), project: project)
+
+        XCTAssertTrue(decisions.isEmpty)
+        XCTAssertEqual(viewModel.pendingQuestion?.id, .integer(9))
+        XCTAssertEqual(
+            notifications.attentionEvents,
+            [.manualActionRequired(
+                runId: "run-1", projectName: project.name, category: .question,
+                requestId: "9", reason: "Codex needs your input."
+            )]
+        )
+    }
+
+    func testManualApprovalModeNeverInvokesTheAutomaticResponder() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let viewModel = makeViewModel { request, allow in decisions.append((request, allow)) }
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "run-1")
+
+        viewModel.handleEventForTesting(
+            .approvalRequested(
+                id: .integer(11), kind: .commandExecution, summary: "npm i", detail: nil,
+                permissionProfile: nil), project: project)
+
+        XCTAssertTrue(decisions.isEmpty)
+        XCTAssertEqual(viewModel.pendingApproval?.id, .integer(11))
+    }
+
+    func testAutoApprovalDoesNotCrossFollowUpRunBoundaries() {
+        var decisions: [(ApprovalRequest, Bool)] = []
+        let viewModel = makeViewModel { request, allow in decisions.append((request, allow)) }
+        viewModel.setApprovalHandling(.autoApprove)
+        let event = CodexSessionEvent.approvalRequested(
+            id: .integer(12), kind: .commandExecution, summary: "npm i", detail: nil,
+            permissionProfile: nil)
+
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "followup-1")
+        viewModel.handleEventForTesting(event, project: project)
+        viewModel.startRunForTesting(project, worker: .legacyAppServer, runId: "followup-2")
+        viewModel.handleEventForTesting(event, project: project)
+
+        XCTAssertEqual(decisions.count, 2)
+        XCTAssertEqual(decisions.map(\.0.id), [.integer(12), .integer(12)])
+    }
 
     func testApprovalEventMovesToWaitingForApproval() {
         let viewModel = makeViewModel()

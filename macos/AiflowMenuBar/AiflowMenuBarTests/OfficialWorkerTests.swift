@@ -133,6 +133,15 @@ final class OfficialWorkerTests: XCTestCase {
         XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Manual")
     }
 
+    func testAutoApproveIsExplicitlyUnavailableForTheOfficialWorker() {
+        let viewModel = makeViewModel()
+        viewModel.setApprovalHandling(.autoApprove)
+        viewModel.startRunForTesting(project, worker: .officialVSCode, runId: "run-1")
+
+        XCTAssertEqual(viewModel.approvalDisplayLabel, "Approval: Auto unavailable")
+        XCTAssertTrue(viewModel.approvalHandlingDescription.contains("unavailable"))
+    }
+
     // MARK: - Run-id correlation
 
     func testWorkerCompletionFinishesTheMatchingRun() {
@@ -515,6 +524,26 @@ final class AttentionCoordinatorTests: XCTestCase {
             .codexCompleted(runId: "run-1", projectName: "demo"),
             .codexCompleted(runId: "run-2", projectName: "demo"),
         ])
+    }
+
+    func testQuestionManualActionDeliversOneNotificationAndPopup() {
+        let notifications = RecordingAttentionNotifications()
+        let presenter = RecordingAttentionPresenter()
+        let coordinator = AttentionCoordinator(defaults: defaults, notifications: notifications)
+        coordinator.attachPresenter(presenter)
+        let event = AiflowAttentionEvent.manualActionRequired(
+            runId: "run-1",
+            projectName: "demo",
+            category: .question,
+            requestId: "question-1",
+            reason: "Codex needs your input."
+        )
+
+        coordinator.deliver(event)
+        coordinator.deliver(event)
+
+        XCTAssertEqual(notifications.events, [event])
+        XCTAssertEqual(presenter.showCount, 1)
     }
 
     func testPresenterReceivesOnlyOneRequestAfterItBecomesVisible() {
