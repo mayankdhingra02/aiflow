@@ -21,6 +21,8 @@ final class HandoffTransportServer: @unchecked Sendable {
 
     private let lock = NSLock()
     private var listener: NWListener?
+    private var listenerState: ListenerState = .stopped
+    private var resolvedPort: UInt16?
     private var connections:
         [ObjectIdentifier: Connection] = [:]
 
@@ -44,13 +46,16 @@ final class HandoffTransportServer: @unchecked Sendable {
     }
 
     var boundPort: UInt16 {
-        port
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedPort ?? port
     }
 
     var isListening: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return listener != nil
+        if case .ready = listenerState { return listener != nil }
+        return false
     }
 
     @discardableResult
@@ -61,12 +66,10 @@ final class HandoffTransportServer: @unchecked Sendable {
         }
 
         lock.lock()
-        let alreadyListening = listener != nil
+        let existingState = listenerState
+        let hasListener = listener != nil
         lock.unlock()
-
-        if alreadyListening {
-            return true
-        }
+        if hasListener { return existingState != .stopping }
 
         let webSocketOptions = NWProtocolWebSocket.Options()
         webSocketOptions.autoReplyPing = true
@@ -86,10 +89,13 @@ final class HandoffTransportServer: @unchecked Sendable {
             .applicationProtocols
             .insert(webSocketOptions, at: 0)
 
+        let requestedPort: NWEndpoint.Port = port == 0
+            ? .any
+            : NWEndpoint.Port(rawValue: port)!
         parameters.requiredLocalEndpoint =
             NWEndpoint.hostPort(
                 host: NWEndpoint.Host(Self.loopbackHost),
-                port: NWEndpoint.Port(rawValue: port)!
+                port: requestedPort
             )
 
         parameters.allowLocalEndpointReuse = true
@@ -105,22 +111,23 @@ final class HandoffTransportServer: @unchecked Sendable {
             }
 
             listener.stateUpdateHandler = {
-                [weak self] state in
-
-                if case .failed(let error) = state {
-                    self?.lastError =
-                        error.localizedDescription
-                }
+                [weak self, weak listener] state in
+                self?.listenerDidChange(state, listener: listener)
             }
 
             lock.lock()
             self.listener = listener
+            listenerState = .starting
+            resolvedPort = nil
             lock.unlock()
 
             listener.start(queue: queue)
             return true
         } catch {
+            lock.lock()
             lastError = error.localizedDescription
+            listenerState = .failed(error.localizedDescription)
+            lock.unlock()
             return false
         }
     }
@@ -134,14 +141,127 @@ final class HandoffTransportServer: @unchecked Sendable {
         connections.removeAll()
         activeClientKey = nil
 
-        listener?.cancel()
-        listener = nil
+        let listener = listener
+        if listener != nil {
+            listenerState = .stopping
+        } else {
+            listenerState = .stopped
+            resolvedPort = nil
+        }
 
         lock.unlock()
 
+        listener?.cancel()
         openConnections.forEach {
             $0.cancel()
         }
+    }
+
+    func waitUntilReady(timeout: TimeInterval = 5) async throws -> UInt16 {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let state = currentListenerState()
+
+            switch state {
+            case .ready(let port):
+                return port
+            case .failed(let message):
+                throw HandoffTransportServerError.listenerFailed(message)
+            case .stopped:
+                throw HandoffTransportServerError.notStarted
+            case .stopping:
+                throw HandoffTransportServerError.stopped
+            case .starting:
+                break
+            }
+
+            guard Date() < deadline else {
+                throw HandoffTransportServerError.readinessTimedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func waitUntilStopped(timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let state = currentListenerState()
+
+            switch state {
+            case .stopped, .failed:
+                return
+            case .ready, .starting:
+                throw HandoffTransportServerError.notStopped
+            case .stopping:
+                guard Date() < deadline else {
+                    throw HandoffTransportServerError.stopTimedOut
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+    }
+
+    private func listenerDidChange(
+        _ state: NWListener.State,
+        listener: NWListener?
+    ) {
+        guard let listener else { return }
+
+        switch state {
+        case .ready:
+            guard let port = listener.port?.rawValue else {
+                recordListenerFailure(
+                    "listener became ready without a bound port",
+                    listener: listener
+                )
+                listener.cancel()
+                return
+            }
+            lock.lock()
+            guard self.listener === listener else {
+                lock.unlock()
+                return
+            }
+            resolvedPort = port
+            listenerState = .ready(port)
+            lock.unlock()
+        case .failed(let error):
+            recordListenerFailure(error.localizedDescription, listener: listener)
+        case .cancelled:
+            lock.lock()
+            guard self.listener === listener else {
+                lock.unlock()
+                return
+            }
+            self.listener = nil
+            resolvedPort = nil
+            listenerState = .stopped
+            lock.unlock()
+        default:
+            break
+        }
+    }
+
+    private func recordListenerFailure(
+        _ message: String,
+        listener: NWListener
+    ) {
+        lock.lock()
+        guard self.listener === listener else {
+            lock.unlock()
+            return
+        }
+        lastError = message
+        self.listener = nil
+        resolvedPort = nil
+        listenerState = .failed(message)
+        lock.unlock()
+    }
+
+    private func currentListenerState() -> ListenerState {
+        lock.lock()
+        defer { lock.unlock() }
+        return listenerState
     }
 
     private func accept(
@@ -722,4 +842,21 @@ final class HandoffTransportServer: @unchecked Sendable {
             onClose?()
         }
     }
+
+    private enum ListenerState: Equatable {
+        case stopped
+        case starting
+        case ready(UInt16)
+        case stopping
+        case failed(String)
+    }
+}
+
+enum HandoffTransportServerError: Error, Equatable {
+    case notStarted
+    case stopped
+    case listenerFailed(String)
+    case readinessTimedOut
+    case notStopped
+    case stopTimedOut
 }

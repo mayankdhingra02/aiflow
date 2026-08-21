@@ -12,8 +12,8 @@ final class HandoffTransportServerTests: XCTestCase {
     private var token: String!
     private var port: UInt16!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
 
         directory =
             FileManager.default.temporaryDirectory
@@ -36,9 +36,7 @@ final class HandoffTransportServerTests: XCTestCase {
         reviewStore = ChatGPTReviewStore(directoryURL: directory.appendingPathComponent("reviews"))
 
         token = HandoffToken.generate()
-        port = UInt16.random(
-            in: 49_200...49_390
-        )
+        port = 0
 
         server =
             HandoffTransportServer(
@@ -49,6 +47,7 @@ final class HandoffTransportServerTests: XCTestCase {
             )
 
         XCTAssertTrue(server.start())
+        port = try await server.waitUntilReady()
 
         socket =
             URLSession.shared
@@ -62,20 +61,21 @@ final class HandoffTransportServerTests: XCTestCase {
         socket.resume()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         socket?.cancel(
             with: .goingAway,
             reason: nil
         )
 
         server?.stop()
+        try? await server?.waitUntilStopped()
 
         try? FileManager.default
             .removeItem(
                 at: directory
             )
 
-        super.tearDown()
+        try await super.tearDown()
     }
 
     func testUnauthenticatedNextCannotReadHandoff()

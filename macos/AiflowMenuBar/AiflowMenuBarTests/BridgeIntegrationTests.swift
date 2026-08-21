@@ -38,10 +38,10 @@ final class BridgeIntegrationTests: XCTestCase {
             notifications: QuietNotifications()
         )
 
-        let port = UInt16.random(in: 49_000...49_190)
         // An explicit test token: never the real one from Application Support.
-        server = AiflowBridgeServer(port: port, token: token)
+        server = AiflowBridgeServer(port: 0, token: token)
         viewModel.attachBridge(server)
+        let port = try await server.waitUntilReady()
 
         client = try TestBridgeClient(port: port)
         // A client is greeted with hello, then must authenticate before any run state.
@@ -53,6 +53,7 @@ final class BridgeIntegrationTests: XCTestCase {
     override func tearDown() async throws {
         client?.close()
         server?.stop()
+        try? await server?.waitUntilStopped()
         try? FileManager.default.removeItem(at: directory)
         defaults.removePersistentDomain(forName: suiteName)
         try await super.tearDown()
