@@ -11,7 +11,16 @@ protocol NotificationManaging: AnyObject {
     func sendQuestion(for question: UserQuestion)
     func sendCompletion(for project: SavedProject)
     func sendFailure(for project: SavedProject?)
+    func sendReviewShipped(projectName: String)
+    func sendReviewNeedsAttention(projectName: String, reason: String)
+    func sendReviewAutomationBlocked(reason: String)
     func removePendingRequest(id: CodexRequestID)
+}
+
+extension NotificationManaging {
+    func sendReviewShipped(projectName: String) {}
+    func sendReviewNeedsAttention(projectName: String, reason: String) {}
+    func sendReviewAutomationBlocked(reason: String) {}
 }
 
 @MainActor
@@ -67,6 +76,27 @@ final class NotificationManager: NSObject, NotificationManaging, UNUserNotificat
             identifier: "aiflow.failure.\(UUID().uuidString)",
             title: "Aiflow — Codex Failed",
             body: "\(name) exited with an error.")
+    }
+
+    func sendReviewShipped(projectName: String) {
+        send(identifier: "aiflow.review.ship.\(projectName)", title: "Aiflow — Review Shipped", body: "ChatGPT shipped the review loop for \(projectName).")
+    }
+
+    func sendReviewNeedsAttention(projectName: String, reason: String) {
+        send(identifier: "aiflow.review.attention.\(stableIdentifierComponent(projectName + "\\u{0}" + reason))", title: "Aiflow — Review Needs Attention", body: String(reason.prefix(160)))
+    }
+
+    func sendReviewAutomationBlocked(reason: String) {
+        send(identifier: "aiflow.review.blocked.\(stableIdentifierComponent(reason))", title: "Aiflow — Review Automation Paused", body: String(reason.prefix(160)))
+    }
+
+    private func stableIdentifierComponent(_ value: String) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     func removePendingRequest(id: CodexRequestID) {

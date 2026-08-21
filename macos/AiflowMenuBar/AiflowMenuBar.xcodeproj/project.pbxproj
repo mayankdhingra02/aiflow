@@ -7,9 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A101A101A101A101A101A101 /* ChatGPTReviewParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */; };
-		A101A102A101A102A101A102 /* ChatGPTReviewDispatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */; };
-		A101A103A101A103A101A103 /* ChatGPTReviewLoopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */; };
 		05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97E859A74BB6436A2CB1B244 /* NotificationManager.swift */; };
 		074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */; };
 		07AE064DECC642ECF164A536 /* BridgeToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20AB672BC3C14C19EFDCD06 /* BridgeToken.swift */; };
@@ -36,9 +33,13 @@
 		8203E7C47E0FF9185503BD47 /* BridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B76D46C558BE296D732DE958 /* BridgeProtocol.swift */; };
 		84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */; };
 		851754C094AB386987C9BB45 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C68D289E457D87CF05FD13 /* CodexAppServerClient.swift */; };
+		8E765EB24821BC85B5A79A25 /* ReviewLoopReadModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2999E2C58408B1A4A113F192 /* ReviewLoopReadModelTests.swift */; };
 		9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */; };
 		9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */; };
+		A8BAD1770A8E4D2FCC74F724 /* ReviewLoopReadModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B955B993FCF6648AE817BC0 /* ReviewLoopReadModel.swift */; };
 		AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F25D8E351B8F533ADD42379 /* Models.swift */; };
+		AE1F2F2AB6513A13E38BA0E4 /* ChatGPTReviewParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FE377833BEB67571061085B /* ChatGPTReviewParser.swift */; };
+		B28CE66706F15E16BD91F9A9 /* ChatGPTReviewLoopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AEED1C32E1A6F67ACC8495C /* ChatGPTReviewLoopTests.swift */; };
 		B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */; };
 		B986C6114FE3410766E7B75F /* WidgetViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB06F723492DC191EE61D0BC /* WidgetViewModel.swift */; };
 		C337CCD0E293BFA434C14C67 /* RunResultHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */; };
@@ -48,6 +49,7 @@
 		D2248DAF0F8A4A246030249F /* ChatGPTReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */; };
 		D3EC2082D7E2FB2C0419B61D /* BridgeRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */; };
 		D7CE301BEFF0E27583534BB3 /* ChatGPTReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */; };
+		DE74905E6A5BBA523404FE1F /* ChatGPTReviewDispatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 287D7C9BFA90E847AF5C6ADF /* ChatGPTReviewDispatch.swift */; };
 		E463D43A86E104AB73C31854 /* HandoffToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = C813CBE56EA3964AB81BBB64 /* HandoffToken.swift */; };
 		E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF41C3133082121F9E0B731 /* ChatURLTests.swift */; };
 		E983B232A72DD590F96D24A7 /* AiflowBridgeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */; };
@@ -65,19 +67,20 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewParser.swift; sourceTree = "<group>"; };
-		A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewDispatch.swift; sourceTree = "<group>"; };
-		A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewLoopTests.swift; sourceTree = "<group>"; };
 		02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeAuthTests.swift; sourceTree = "<group>"; };
 		06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewStore.swift; sourceTree = "<group>"; };
 		077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStore.swift; sourceTree = "<group>"; };
 		142326CA5A58EB20B76E3633 /* GitRepositoryValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryValidator.swift; sourceTree = "<group>"; };
+		1AEED1C32E1A6F67ACC8495C /* ChatGPTReviewLoopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewLoopTests.swift; sourceTree = "<group>"; };
 		1C985898D56C89DBBB229B0A /* BridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeTests.swift; sourceTree = "<group>"; };
 		1D4CC6FA2307BC6CB463ACED /* CodexLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocator.swift; sourceTree = "<group>"; };
 		1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMapTests.swift; sourceTree = "<group>"; };
 		24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		27560E4FFEB544D0A4D14DE4 /* AiflowMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AiflowMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		287D7C9BFA90E847AF5C6ADF /* ChatGPTReviewDispatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewDispatch.swift; sourceTree = "<group>"; };
 		296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowBridgeServer.swift; sourceTree = "<group>"; };
+		2999E2C58408B1A4A113F192 /* ReviewLoopReadModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewLoopReadModelTests.swift; sourceTree = "<group>"; };
+		2FE377833BEB67571061085B /* ChatGPTReviewParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewParser.swift; sourceTree = "<group>"; };
 		30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficialWorkerTests.swift; sourceTree = "<group>"; };
 		30D21D938BDADCD2D8085B42 /* GitProjectValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitProjectValidationTests.swift; sourceTree = "<group>"; };
 		3EF41C3133082121F9E0B731 /* ChatURLTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatURLTests.swift; sourceTree = "<group>"; };
@@ -97,6 +100,7 @@
 		7F25D8E351B8F533ADD42379 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		7F2C2C7993E8CEC850AD5BB7 /* CodexCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexCommandTests.swift; sourceTree = "<group>"; };
 		8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiflowMenuBarApp.swift; sourceTree = "<group>"; };
+		8B955B993FCF6648AE817BC0 /* ReviewLoopReadModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewLoopReadModel.swift; sourceTree = "<group>"; };
 		97E859A74BB6436A2CB1B244 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectButtonBehaviorTests.swift; sourceTree = "<group>"; };
 		9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeRoutingTests.swift; sourceTree = "<group>"; };
@@ -137,13 +141,13 @@
 		C25AE5B96E6B6AA0A33F8C68 /* AiflowMenuBarTests */ = {
 			isa = PBXGroup;
 			children = (
-				A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */,
 				CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */,
 				7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */,
 				02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */,
 				FFCF38B5F1DF8D04C39313C8 /* BridgeIntegrationTests.swift */,
 				9AEBC5F40983F76BE31BC213 /* BridgeRoutingTests.swift */,
 				1C985898D56C89DBBB229B0A /* BridgeTests.swift */,
+				1AEED1C32E1A6F67ACC8495C /* ChatGPTReviewLoopTests.swift */,
 				FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */,
 				1EE0EAF222819C651F0B7B33 /* ChatProjectMapTests.swift */,
 				3EF41C3133082121F9E0B731 /* ChatURLTests.swift */,
@@ -154,6 +158,7 @@
 				7885F26343CD4FF23777CE64 /* HandoffTransportServerTests.swift */,
 				30713205C2F1B2A843A1B774 /* OfficialWorkerTests.swift */,
 				985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */,
+				2999E2C58408B1A4A113F192 /* ReviewLoopReadModelTests.swift */,
 				E99E943AAA647F203E588457 /* RunResultHandoffStoreTests.swift */,
 				4E13AB7DB683EEEA45EEF7A2 /* RunResultHandoffTests.swift */,
 				74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */,
@@ -164,8 +169,6 @@
 		F8198B7D2C67F60C5E574180 /* AiflowMenuBar */ = {
 			isa = PBXGroup;
 			children = (
-				A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */,
-				A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */,
 				296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */,
 				491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */,
 				8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */,
@@ -173,6 +176,8 @@
 				B20AB672BC3C14C19EFDCD06 /* BridgeToken.swift */,
 				B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */,
 				5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */,
+				287D7C9BFA90E847AF5C6ADF /* ChatGPTReviewDispatch.swift */,
+				2FE377833BEB67571061085B /* ChatGPTReviewParser.swift */,
 				06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */,
 				5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */,
 				5BD2EB90D88CAE9E95888A1C /* ChatURL.swift */,
@@ -186,6 +191,7 @@
 				24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */,
 				7F25D8E351B8F533ADD42379 /* Models.swift */,
 				97E859A74BB6436A2CB1B244 /* NotificationManager.swift */,
+				8B955B993FCF6648AE817BC0 /* ReviewLoopReadModel.swift */,
 				B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */,
 				552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */,
 				077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */,
@@ -274,8 +280,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A101A101A101A101A101A101 /* ChatGPTReviewParser.swift in Sources */,
-				A101A102A101A102A101A102 /* ChatGPTReviewDispatch.swift in Sources */,
 				E983B232A72DD590F96D24A7 /* AiflowBridgeServer.swift in Sources */,
 				B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */,
 				0F740479FE61F4333251DA36 /* AiflowMenuBarApp.swift in Sources */,
@@ -283,6 +287,8 @@
 				07AE064DECC642ECF164A536 /* BridgeToken.swift in Sources */,
 				44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */,
 				D7CE301BEFF0E27583534BB3 /* ChatGPTReview.swift in Sources */,
+				DE74905E6A5BBA523404FE1F /* ChatGPTReviewDispatch.swift in Sources */,
+				AE1F2F2AB6513A13E38BA0E4 /* ChatGPTReviewParser.swift in Sources */,
 				D2248DAF0F8A4A246030249F /* ChatGPTReviewStore.swift in Sources */,
 				84CFC263015EA5B337AAABAC /* ChatProjectMap.swift in Sources */,
 				2F83EE22ED408AFE85DBDC19 /* ChatURL.swift in Sources */,
@@ -295,6 +301,7 @@
 				9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */,
 				AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */,
 				05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */,
+				A8BAD1770A8E4D2FCC74F724 /* ReviewLoopReadModel.swift in Sources */,
 				C337CCD0E293BFA434C14C67 /* RunResultHandoff.swift in Sources */,
 				9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */,
 				074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */,
@@ -306,13 +313,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A101A103A101A103A101A103 /* ChatGPTReviewLoopTests.swift in Sources */,
 				FD2E512C9A4E9344309CC60B /* AiflowCLITests.swift in Sources */,
 				538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */,
 				32518D4DB3BA7C9A02C30696 /* BridgeAuthTests.swift in Sources */,
 				2290CC1AC00E3093FDCD907B /* BridgeIntegrationTests.swift in Sources */,
 				D3EC2082D7E2FB2C0419B61D /* BridgeRoutingTests.swift in Sources */,
 				21A91E616E5AEFA372AB04F1 /* BridgeTests.swift in Sources */,
+				B28CE66706F15E16BD91F9A9 /* ChatGPTReviewLoopTests.swift in Sources */,
 				4FA04480A556FB113481DE4E /* ChatGPTReviewStoreTests.swift in Sources */,
 				CEFF75CF778B8658D38F242F /* ChatProjectMapTests.swift in Sources */,
 				E933D791E4C8B8974C6485D7 /* ChatURLTests.swift in Sources */,
@@ -323,6 +330,7 @@
 				45FC687B867651D7D8D5C9A0 /* HandoffTransportServerTests.swift in Sources */,
 				8190E9F3F4872324BC72CCB0 /* OfficialWorkerTests.swift in Sources */,
 				55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */,
+				8E765EB24821BC85B5A79A25 /* ReviewLoopReadModelTests.swift in Sources */,
 				7F1AF36094AC29BD0CF8B579 /* RunResultHandoffStoreTests.swift in Sources */,
 				CAF27A59FDAC92D5B2160164 /* RunResultHandoffTests.swift in Sources */,
 				796F845304D5C0626B515389 /* SavedProjectStoreTests.swift in Sources */,

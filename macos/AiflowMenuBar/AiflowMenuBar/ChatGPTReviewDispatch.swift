@@ -74,6 +74,14 @@ final class ChatGPTReviewDispatchStore {
         return try loadValidated(target, expectedSourceRunId: sourceRunId)
     }
 
+    /// Read-only diagnostic location for the durable dispatch record.
+    func evidenceURL(sourceRunId: String) throws -> URL {
+        guard UUID(uuidString: sourceRunId) != nil else {
+            throw ChatGPTReviewDispatchStoreError.invalidRunId
+        }
+        return url(for: sourceRunId)
+    }
+
     func allRecords() throws -> [ChatGPTReviewDispatch] {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory)

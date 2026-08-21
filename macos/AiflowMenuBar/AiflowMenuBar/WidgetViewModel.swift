@@ -7,6 +7,8 @@ private enum ChatGPTReviewAutomationError: Error {
 
 @MainActor
 final class WidgetViewModel: ObservableObject {
+    private static let dismissedReviewWarningsKey = "aiflow.dismissed-review-warnings"
+    private static let deliveredReviewNotificationsKey = "aiflow.delivered-review-notifications"
     /// The app's single instance. Referenced by the scene and by the app delegate so the
     /// companion bridge can start at launch. Tests construct their own instances instead and
     /// never touch this, so no test binds the bridge port.
@@ -22,6 +24,12 @@ final class WidgetViewModel: ObservableObject {
     @Published private(set) var lastMessage = ""
     @Published private(set) var notice = ""
     @Published private(set) var config: CodexConfig?
+    @Published private(set) var currentReviewLoopStatus: ReviewLoopReadModel.Record?
+    @Published private(set) var recentReviewLoopRecords: [ReviewLoopReadModel.Record] = []
+    @Published private(set) var reviewManualAttentionCount = 0
+    @Published private(set) var hasQueuedAutomaticReviewFollowUp = false
+    @Published private(set) var reviewAutomationBlocked = false
+    @Published private(set) var reviewAutomationBlockReason: String?
 
     @Published var selectedModelRole: String {
         didSet { defaults.set(selectedModelRole, forKey: Self.modelKey) }
@@ -42,7 +50,8 @@ final class WidgetViewModel: ObservableObject {
     private let reviewDispatchStore: ChatGPTReviewDispatchStore
     private let now: () -> Date
     private let reviewFollowupSender: ((BridgeEvent) -> Bool)?
-    private var reviewAutomationBlocked = false
+    private var dismissedReviewWarningIDs: Set<String> = []
+    private var manualRecoveryDraft: ManualRecoveryDraft?
 
     private var client: CodexAppServerClient?
     private var isPopoverVisible = false
@@ -74,6 +83,12 @@ final class WidgetViewModel: ObservableObject {
 
         var codexConversationId: String?
         var codexTurnId: String?
+    }
+
+    private struct ManualRecoveryDraft {
+        let sourceRunId: String
+        let forbiddenFollowUpRunId: String?
+        let prompt: String
     }
 
     /// True when a companion has reported that the official Codex worker is usable.
@@ -121,6 +136,9 @@ final class WidgetViewModel: ObservableObject {
             defaults.string(forKey: Self.modelKey) ?? CodexConfig.defaultModelRole
         self.selectedEffort =
             defaults.string(forKey: Self.effortKey) ?? CodexConfig.defaultReasoningEffort
+        self.dismissedReviewWarningIDs = Set(
+            defaults.stringArray(forKey: Self.dismissedReviewWarningsKey) ?? []
+        )
         self.savedProjects = store.projects
         if let error = store.loadError { self.notice = error }
     }
@@ -138,7 +156,7 @@ final class WidgetViewModel: ObservableObject {
         return "Approval: Manual"
     }
 
-    var hasPrompt: Bool { !clipboardPrompt.isEmpty }
+    var hasPrompt: Bool { !effectivePrompt.isEmpty }
     var promptCharacterCount: Int { clipboardPrompt.count }
     var resolvedModelId: String? { config?.model(forRole: selectedModelRole)?.modelId }
 
@@ -169,6 +187,8 @@ final class WidgetViewModel: ObservableObject {
 
     var isRunning: Bool { runState.isBusy }
 
+    var confirmationPromptPreview: String { String(effectivePrompt.prefix(400)) }
+
     /// MenuBarExtra's label is app-lifetime state, independent of its transient popover view.
     var menuBarSymbolName: String {
         switch runState {
@@ -192,6 +212,7 @@ final class WidgetViewModel: ObservableObject {
         await loadConfigIfNeeded()
         refreshClipboard()
         refreshChat()
+        refreshReviewLoopStatus()
         savedProjects = store.projects
     }
 
@@ -321,7 +342,10 @@ final class WidgetViewModel: ObservableObject {
     }
 
     func cancelConfirmation() {
-        if case .confirming = runState { runState = .ready }
+        if case .confirming = runState {
+            manualRecoveryDraft = nil
+            runState = .ready
+        }
     }
 
     var confirmingProject: SavedProject? {
@@ -344,13 +368,16 @@ final class WidgetViewModel: ObservableObject {
         guard case .confirming(let project) = runState else { return }
         guard let modelId = resolvedModelId, hasPrompt else { return }
 
-        let prompt = clipboardPrompt  // full clipboard text, never the preview
+        let prompt = effectivePrompt
+        let forbiddenFollowUpRunId = manualRecoveryDraft?.forbiddenFollowUpRunId
+        manualRecoveryDraft = nil
         let effort = selectedEffort
         lastMessage = ""
         runningProject = project
         runState = .launching(project)
 
-        let runId = UUID().uuidString
+        var runId = UUID().uuidString
+        while runId == forbiddenFollowUpRunId { runId = UUID().uuidString }
         activeRunId = runId
         activeHandoffContext = ActiveRunHandoffContext(
             runId: runId,
@@ -419,6 +446,61 @@ final class WidgetViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private var effectivePrompt: String {
+        manualRecoveryDraft?.prompt ?? clipboardPrompt
+    }
+
+    /// Starts a new normal run only after the user confirms it in the existing confirmation
+    /// panel. This intentionally never resumes or reuses an ambiguous automatic follow-up.
+    func requestManualRecoveryRun(_ record: ReviewLoopReadModel.Record) {
+        guard let evidence = manualRecoveryEvidence(for: record) else {
+            notice = "A new manual run cannot be prepared from this review."
+            return
+        }
+
+        let prompt = """
+        Manual review recovery for Aiflow source run \(record.sourceRunId).
+
+        This is a new user-confirmed run. Do not assume an earlier automatic follow-up was not received.
+
+        Codex Instruction:
+        \(evidence.instruction)
+        """
+        guard prompt.lengthOfBytes(using: .utf8) <= 32 * 1024 else {
+            notice = "The recovery instruction is too large for a safe manual run."
+            return
+        }
+
+        manualRecoveryDraft = ManualRecoveryDraft(
+            sourceRunId: record.sourceRunId,
+            forbiddenFollowUpRunId: evidence.dispatch.followUpRunId,
+            prompt: prompt
+        )
+        runState = .confirming(evidence.project)
+        notice = "Confirm a new manual run; the ambiguous follow-up will not be replayed."
+    }
+
+    func canStartManualRecoveryRun(_ record: ReviewLoopReadModel.Record) -> Bool {
+        manualRecoveryEvidence(for: record) != nil
+    }
+
+    private func manualRecoveryEvidence(
+        for record: ReviewLoopReadModel.Record
+    ) -> (dispatch: ChatGPTReviewDispatch, instruction: String, project: SavedProject)? {
+        guard record.needsManualAttention,
+              !runState.isBusy,
+              resolvedModelId != nil,
+              let dispatch = try? reviewDispatchStore.record(sourceRunId: record.sourceRunId),
+              let review = try? reviewStore.validatedReview(runId: record.sourceRunId),
+              review.runId == dispatch.sourceRunId,
+              review.conversationId == dispatch.conversationId,
+              let parsed = try? ChatGPTReviewParser.parse(review),
+              case .changesRequested(let instruction) = parsed,
+              let project = store.project(withPath: dispatch.project.path),
+              project.exists else { return nil }
+        return (dispatch, instruction, project)
     }
 
     /// Resolves the return destination at dispatch time.
@@ -706,6 +788,7 @@ final class WidgetViewModel: ObservableObject {
             if let runId = activeRunId {
                 do {
                     try reviewDispatchStore.markDispatched(followUpRunId: runId)
+                    refreshReviewLoopStatus()
                 } catch {
                     stopAutomaticReviewDispatch("Aiflow could not persist the accepted follow-up.")
                 }
@@ -763,6 +846,7 @@ final class WidgetViewModel: ObservableObject {
     }
 
     private func handlePersistedReview(_ review: ChatGPTReview) {
+        defer { refreshReviewLoopStatus() }
         guard !reviewAutomationBlocked else { return }
         do {
             _ = try reviewStore.allReviews()
@@ -775,6 +859,7 @@ final class WidgetViewModel: ObservableObject {
     }
 
     private func reconcileDurableReviewsAndResume() {
+        defer { refreshReviewLoopStatus() }
         guard !reviewAutomationBlocked else { return }
         do {
             let reviews = try reviewStore.allReviews()
@@ -863,6 +948,7 @@ final class WidgetViewModel: ObservableObject {
                 terminalReason: nil
             )
             try reviewDispatchStore.prepare(dispatch)
+            refreshReviewLoopStatus()
         }
     }
 
@@ -898,6 +984,10 @@ final class WidgetViewModel: ObservableObject {
             terminalReason: reason
         )
         try reviewDispatchStore.prepare(dispatch)
+        if state == .stopped || state == .manualAttention {
+            notifyReviewTerminalState(dispatch)
+        }
+        refreshReviewLoopStatus()
     }
 
     private func resumePendingReviewDispatches() {
@@ -944,6 +1034,7 @@ final class WidgetViewModel: ObservableObject {
                 == .dispatching else {
                 throw ChatGPTReviewDispatchStoreError.writeVerificationFailed
             }
+            refreshReviewLoopStatus()
         } catch {
             stopAutomaticReviewDispatch("Aiflow could not persist follow-up dispatch intent.")
             return
@@ -1030,6 +1121,10 @@ final class WidgetViewModel: ObservableObject {
                 reason: reason
             )
             notice = "Aiflow review follow-up requires manual attention."
+            refreshReviewLoopStatus()
+            if let updated = try reviewDispatchStore.record(sourceRunId: dispatch.sourceRunId) {
+                notifyReviewTerminalState(updated, reason: reason)
+            }
         } catch {
             stopAutomaticReviewDispatch("Aiflow could not persist manual-attention state.")
         }
@@ -1038,12 +1133,135 @@ final class WidgetViewModel: ObservableObject {
     private func stopAutomaticReviewDispatch(_ message: String) {
         reviewAutomationBlocked = true
         notice = String(message.prefix(240))
+        reviewAutomationBlockReason = notice
+        refreshReviewLoopStatus()
+        notifyReviewAutomationBlockedIfNeeded(notice)
+    }
+
+    private func refreshReviewLoopStatus() {
+        do {
+            let snapshot = ReviewLoopReadModel.make(
+                reviews: try reviewStore.allReviews(),
+                dispatches: try reviewDispatchStore.allRecords()
+            )
+            recentReviewLoopRecords = snapshot.records
+            reviewManualAttentionCount = snapshot.manualAttentionCount
+            hasQueuedAutomaticReviewFollowUp = snapshot.hasQueuedFollowUp
+            currentReviewLoopStatus = snapshot.records.first(where: {
+                !$0.needsManualAttention || !dismissedReviewWarningIDs.contains($0.id)
+            }) ?? snapshot.current
+        } catch {
+            recentReviewLoopRecords = []
+            currentReviewLoopStatus = nil
+            reviewManualAttentionCount = 0
+            hasQueuedAutomaticReviewFollowUp = false
+            reviewAutomationBlocked = true
+            reviewAutomationBlockReason = "Review evidence could not be validated. Resolve the underlying file problem, then recheck evidence."
+        }
+    }
+
+    func recheckReviewEvidence() {
+        do {
+            _ = try reviewStore.allReviews()
+            _ = try reviewDispatchStore.allRecords()
+            reviewAutomationBlocked = false
+            reviewAutomationBlockReason = nil
+            reconcileDurableReviewsAndResume()
+            notice = "Review evidence passed revalidation."
+        } catch {
+            reviewAutomationBlocked = true
+            reviewAutomationBlockReason = "Review evidence is still unreadable or inconsistent."
+            notice = reviewAutomationBlockReason ?? "Review evidence needs attention."
+        }
+        refreshReviewLoopStatus()
+    }
+
+    func dismissReviewWarning(_ record: ReviewLoopReadModel.Record) {
+        dismissedReviewWarningIDs.insert(record.id)
+        defaults.set(
+            Array(dismissedReviewWarningIDs).sorted(),
+            forKey: Self.dismissedReviewWarningsKey
+        )
+        refreshReviewLoopStatus()
+    }
+
+    func openReviewConversation(_ record: ReviewLoopReadModel.Record) {
+        guard let url = URL(string: "https://chatgpt.com/c/\(record.conversationId)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func revealReviewEvidence(_ record: ReviewLoopReadModel.Record) {
+        let urls = [
+            try? reviewStore.evidenceURL(runId: record.sourceRunId),
+            try? reviewDispatchStore.evidenceURL(sourceRunId: record.sourceRunId),
+            try? handoffStore.deliveredEvidenceURL(runId: record.sourceRunId),
+        ]
+        .compactMap { $0 }
+        .filter { FileManager.default.fileExists(atPath: $0.path) }
+
+        guard !urls.isEmpty else {
+            notice = "No immutable review evidence file is currently available to reveal."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    func copyReviewSourceRunID(_ record: ReviewLoopReadModel.Record) {
+        copyToPasteboard(record.sourceRunId, notice: "Copied source run ID.")
+    }
+
+    func copyReviewInstruction(_ record: ReviewLoopReadModel.Record) {
+        guard let dispatch = try? reviewDispatchStore.record(sourceRunId: record.sourceRunId),
+              let instruction = dispatch.instruction else {
+            notice = "No follow-up instruction is available for this review."
+            return
+        }
+        copyToPasteboard(instruction, notice: "Copied follow-up instruction.")
+    }
+
+    private func copyToPasteboard(_ value: String, notice: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        self.notice = notice
+    }
+
+    private func notifyReviewTerminalState(
+        _ dispatch: ChatGPTReviewDispatch,
+        reason: String? = nil
+    ) {
+        guard !isPopoverVisible, notificationsAvailable else { return }
+        let key = "\(dispatch.sourceRunId):\(dispatch.state.rawValue):\(reason ?? dispatch.terminalReason ?? "")"
+        guard markReviewNotificationDelivered(key) else { return }
+
+        if dispatch.state == .stopped, dispatch.verdict == "SHIP" {
+            notifications.sendReviewShipped(projectName: dispatch.project.name)
+        } else if dispatch.state == .manualAttention {
+            notifications.sendReviewNeedsAttention(
+                projectName: dispatch.project.name,
+                reason: reason ?? dispatch.terminalReason ?? "Review requires manual attention."
+            )
+        }
+    }
+
+    private func notifyReviewAutomationBlockedIfNeeded(_ reason: String) {
+        guard !isPopoverVisible, notificationsAvailable else { return }
+        guard markReviewNotificationDelivered("blocked:\(reason)") else { return }
+        notifications.sendReviewAutomationBlocked(reason: reason)
+    }
+
+    private func markReviewNotificationDelivered(_ key: String) -> Bool {
+        var delivered = defaults.stringArray(forKey: Self.deliveredReviewNotificationsKey) ?? []
+        guard !delivered.contains(key) else { return false }
+        delivered.append(key)
+        defaults.set(Array(delivered.suffix(128)), forKey: Self.deliveredReviewNotificationsKey)
+        return true
     }
 
     private func finishWorkerRun() {
         if let runId = activeRunId {
             do {
                 try reviewDispatchStore.markCompleted(followUpRunId: runId)
+                refreshReviewLoopStatus()
             } catch {
                 stopAutomaticReviewDispatch("Aiflow could not persist follow-up completion.")
             }

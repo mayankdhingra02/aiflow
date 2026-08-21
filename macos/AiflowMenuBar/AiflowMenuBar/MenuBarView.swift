@@ -7,6 +7,7 @@ struct MenuBarView: View {
     @State private var removing: SavedProject?
     @State private var mappingChat: SavedProject?
     @State private var confirmingCancel = false
+    @State private var showingReviewHistory = false
 
     /// What the window is currently asking the user for.
     ///
@@ -23,6 +24,7 @@ struct MenuBarView: View {
         case mappingChat(SavedProject)
         case renaming(SavedProject)
         case removing(SavedProject)
+        case reviewHistory
     }
 
     private var mode: Mode {
@@ -34,6 +36,7 @@ struct MenuBarView: View {
         if let project = mappingChat { return .mappingChat(project) }
         if let project = renaming { return .renaming(project) }
         if let project = removing { return .removing(project) }
+        if showingReviewHistory { return .reviewHistory }
         return .normal
     }
 
@@ -46,6 +49,8 @@ struct MenuBarView: View {
                 projectsSection
                 Divider()
                 statusSection
+                Divider()
+                reviewLoopSection
 
             case .confirmingRun(let project):
                 runConfirmPanel(project)
@@ -87,6 +92,11 @@ struct MenuBarView: View {
 
             case .removing(let project):
                 removePanel(project)
+
+            case .reviewHistory:
+                ReviewHistoryPanel(viewModel: viewModel) {
+                    showingReviewHistory = false
+                }
             }
         }
         .padding(14)
@@ -115,7 +125,7 @@ struct MenuBarView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Prompt").font(.caption).foregroundStyle(.secondary)
-                Text(String(viewModel.clipboardPrompt.prefix(200)))
+                Text(String(viewModel.confirmationPromptPreview.prefix(200)))
                     .font(.caption).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -350,6 +360,37 @@ struct MenuBarView: View {
         }
     }
 
+    private var reviewLoopSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Review Loop").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("History") { showingReviewHistory = true }
+                    .buttonStyle(.borderless).font(.caption2)
+            }
+
+            if viewModel.reviewAutomationBlocked {
+                Text("Review automation paused").font(.callout).foregroundStyle(.orange)
+                Text(viewModel.reviewAutomationBlockReason ?? "Evidence needs revalidation.")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Button("Recheck Evidence") { viewModel.recheckReviewEvidence() }
+                    .buttonStyle(.borderless).font(.caption2)
+            } else if let record = viewModel.currentReviewLoopStatus {
+                Text(record.verdict.title).font(.callout)
+                Text(record.stateTitle).font(.caption2).foregroundStyle(.secondary)
+                if record.lineageDepth > 0 {
+                    Text("Follow-up \(record.lineageDepth) of 5")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if record.needsManualAttention, let reason = record.terminalReason {
+                    Text(reason).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                }
+            } else {
+                Text("No review activity").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private func addProject() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -363,6 +404,120 @@ struct MenuBarView: View {
 }
 
 // MARK: - Inline panels
+
+private struct ReviewHistoryPanel: View {
+    @ObservedObject var viewModel: WidgetViewModel
+    let onBack: () -> Void
+    @State private var selectedID: String?
+
+    private var selected: ReviewLoopReadModel.Record? {
+        viewModel.recentReviewLoopRecords.first { $0.id == selectedID }
+    }
+
+    var body: some View {
+        if let selected {
+            details(selected)
+        } else {
+            history
+        }
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Review History").font(.headline)
+                Spacer()
+                Button("Back") { onBack() }.buttonStyle(.borderless)
+            }
+
+            if viewModel.reviewAutomationBlocked {
+                Text("Review automation paused").font(.callout).foregroundStyle(.orange)
+                Text(viewModel.reviewAutomationBlockReason ?? "Evidence needs revalidation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Recheck Evidence") { viewModel.recheckReviewEvidence() }
+            }
+
+            if viewModel.recentReviewLoopRecords.isEmpty {
+                Text("No review activity").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(viewModel.recentReviewLoopRecords) { record in
+                            Button { selectedID = record.id } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(record.projectName).font(.callout)
+                                        Spacer()
+                                        Text(record.verdict.title).font(.caption)
+                                    }
+                                    Text(record.stateTitle).font(.caption2).foregroundStyle(
+                                        record.needsManualAttention ? .orange : .secondary
+                                    )
+                                    Text("Depth \(record.lineageDepth) · \(record.capturedAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+    }
+
+    private func details(_ record: ReviewLoopReadModel.Record) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Button("Back") { selectedID = nil }.buttonStyle(.borderless)
+                Spacer()
+                Text("Review Details").font(.headline)
+            }
+
+            detail("Project", record.projectName)
+            detail("Verdict", record.verdict.title)
+            detail("State", record.stateTitle)
+            detail("Depth", "\(record.lineageDepth) of 5")
+            detail("Source run", record.sourceRunId)
+            if let followUpRunId = record.followUpRunId { detail("Follow-up run", followUpRunId) }
+            detail("ChatGPT", record.conversationId)
+            if let codex = record.codexConversationId { detail("Codex", codex) }
+            if let reason = record.terminalReason { detail("Reason", reason) }
+            if let instruction = record.instructionPreview { detail("Instruction", instruction) }
+
+            HStack(spacing: 8) {
+                Button("Open ChatGPT") { viewModel.openReviewConversation(record) }
+                Button("Reveal Evidence") { viewModel.revealReviewEvidence(record) }
+            }
+            HStack(spacing: 8) {
+                Button("Copy Run ID") { viewModel.copyReviewSourceRunID(record) }
+                if record.instructionPreview != nil {
+                    Button("Copy Instruction") { viewModel.copyReviewInstruction(record) }
+                }
+            }
+
+            if record.needsManualAttention {
+                Text("Aiflow will not retry this automatic follow-up because Codex may already have received it.")
+                    .font(.caption2).foregroundStyle(.orange)
+                Button("Dismiss Warning") { viewModel.dismissReviewWarning(record) }
+                    .buttonStyle(.borderless).font(.caption2)
+                if viewModel.canStartManualRecoveryRun(record) {
+                    Button("Start New Manual Run") { viewModel.requestManualRecoveryRun(record) }
+                }
+            }
+        }
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
 
 private struct ApprovalPanel: View {
     let request: ApprovalRequest
