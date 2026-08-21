@@ -495,12 +495,24 @@ final class HandoffTransportServer: @unchecked Sendable {
             return
         }
         do {
-            try routingStore.markManualAttention(
-                runId: runId,
-                reason: "ChatGPT routing delivery did not complete safely.",
-                manualFallbackAvailable: true
-            )
-            if let request = try routingStore.record(runId: runId) { onRoutingAttention?(request) }
+            guard let request = try routingStore.record(runId: runId) else {
+                throw CodexInitialRoutingStoreError.recordNotFound
+            }
+            switch request.state {
+            case .delivering, .delivered:
+                try routingStore.markManualAttention(
+                    runId: runId,
+                    reason: "ChatGPT routing delivery did not complete safely.",
+                    manualFallbackAvailable: true
+                )
+                if let attention = try routingStore.record(runId: runId) { onRoutingAttention?(attention) }
+
+            // A response or execution boundary has already won. Acknowledge this stale browser
+            // observation so its durable client evidence is cleared, but never mutate it into a
+            // second, fallback-eligible execution path.
+            case .pending, .completed, .starting, .started, .manualAttention, .cancelled:
+                break
+            }
             send(.routingResponseAck(runId: runId), to: connection)
         } catch {
             send(.error("routing_conflict", runId: runId), to: connection)

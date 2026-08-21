@@ -1033,23 +1033,7 @@ final class WidgetViewModel: ObservableObject {
     func startHandoffTransportIfNeeded() {
         guard handoffTransportServer == nil else { return }
 
-        // A response or execution intent without a live app-lifetime owner is ambiguous.
-        // Preserve it as evidence, but never replay it automatically after restart.
-        do {
-            let attention = try initialRoutingStore.reconcileAfterRestart()
-            initialRoutingAttention = attention.first
-            for request in attention {
-                self.attention.deliver(.routingNeedsAttention(
-                    runId: request.runId,
-                    projectName: request.project.name,
-                    category: request.manualFallbackAvailable == true ? "manual_fallback" : "execution_ambiguous"
-                ))
-            }
-        } catch {
-            initialRoutingAutomationBlocked = true
-            self.attention.deliver(.routingNeedsAttention(runId: "routing-store", projectName: "Aiflow", category: "integrity"))
-            notice = "Initial routing evidence is unreadable; automatic routing is blocked."
-        }
+        reconcileInitialRoutingAfterRestart()
 
         let server = HandoffTransportServer(
             store: handoffStore,
@@ -1070,6 +1054,27 @@ final class WidgetViewModel: ObservableObject {
 
         if !server.start() {
             notice = "Aiflow result transport could not start."
+        }
+    }
+
+    private func reconcileInitialRoutingAfterRestart() {
+        // A response or execution intent without a live app-lifetime owner is ambiguous.
+        // A browser reconnect during this same process may retry pending evidence; after a
+        // macOS restart no owner survives, so reconciliation makes it manual attention.
+        do {
+            let attention = try initialRoutingStore.reconcileAfterRestart()
+            initialRoutingAttention = attention.first
+            for request in attention {
+                self.attention.deliver(.routingNeedsAttention(
+                    runId: request.runId,
+                    projectName: request.project.name,
+                    category: request.manualFallbackAvailable == true ? "manual_fallback" : "execution_ambiguous"
+                ))
+            }
+        } catch {
+            initialRoutingAutomationBlocked = true
+            self.attention.deliver(.routingNeedsAttention(runId: "routing-store", projectName: "Aiflow", category: "integrity"))
+            notice = "Initial routing evidence is unreadable; automatic routing is blocked."
         }
     }
 
@@ -1811,6 +1816,10 @@ extension RunState {
 extension WidgetViewModel {
     func reconcileReviewsForTesting() {
         reconcileDurableReviewsAndResume()
+    }
+
+    func reconcileInitialRoutingAfterRestartForTesting() {
+        reconcileInitialRoutingAfterRestart()
     }
 
     func applyConfigForTesting(_ config: CodexConfig) {

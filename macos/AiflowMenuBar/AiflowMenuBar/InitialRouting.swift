@@ -146,19 +146,44 @@ final class CodexInitialRoutingStore {
 
     func markManualAttention(runId: String, reason: String, manualFallbackAvailable: Bool = false) throws {
         _ = try update(runId) { request in
-            guard request.state != .cancelled else { throw CodexInitialRoutingStoreError.invalidTransition }
-            request.state = .manualAttention
-            request.terminalReason = String(reason.prefix(300))
-            request.manualFallbackAvailable = manualFallbackAvailable
+            switch request.state {
+            // These states prove that no Codex dispatch has begun. They may offer the user the
+            // same-run manual selection exactly once.
+            case .pending, .delivering, .delivered, .completed:
+                request.state = .manualAttention
+                request.terminalReason = String(reason.prefix(300))
+                request.manualFallbackAvailable = manualFallbackAvailable
+
+            // Crossing into `.starting` is the durable no-replay boundary. Attention is still
+            // useful, but it can never create a second execution path.
+            case .starting, .started:
+                guard !manualFallbackAvailable else { throw CodexInitialRoutingStoreError.invalidTransition }
+                request.state = .manualAttention
+                request.terminalReason = String(reason.prefix(300))
+                request.manualFallbackAvailable = false
+
+            // A manual-attention record keeps its existing fallback right. In particular, stale
+            // evidence cannot elevate an execution-ambiguous record from false/nil to true.
+            case .manualAttention:
+                guard !manualFallbackAvailable || request.manualFallbackAvailable == true else {
+                    throw CodexInitialRoutingStoreError.invalidTransition
+                }
+                request.terminalReason = String(reason.prefix(300))
+
+            case .cancelled:
+                throw CodexInitialRoutingStoreError.invalidTransition
+            }
         }
     }
 
-    /// Pending is the sole replay-safe state. Every post-send state is preserved as attention.
+    /// Browser reconnects within one live macOS process may retry pending routing. After a macOS
+    /// restart, however, the app-lifetime execution owner is gone, so every non-cancelled
+    /// in-flight state becomes attention rather than being exposed for automatic replay.
     func reconcileAfterRestart() throws -> [CodexInitialRoutingRequest] {
         let requests = try allRequests()
         var changed: [CodexInitialRoutingRequest] = []
-        for request in requests where [.delivering, .delivered, .completed, .starting, .started].contains(request.state) {
-            let isPreDispatch = [.delivering, .delivered, .completed].contains(request.state)
+        for request in requests where [.pending, .delivering, .delivered, .completed, .starting, .started].contains(request.state) {
+            let isPreDispatch = [.pending, .delivering, .delivered, .completed].contains(request.state)
             try markManualAttention(
                 runId: request.runId,
                 reason: "Aiflow restarted while initial routing was in progress.",
