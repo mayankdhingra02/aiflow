@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A101A101A101A101A101A101 /* ChatGPTReviewParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */; };
+		A101A102A101A102A101A102 /* ChatGPTReviewDispatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */; };
+		A101A103A101A103A101A103 /* ChatGPTReviewLoopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */; };
 		05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97E859A74BB6436A2CB1B244 /* NotificationManager.swift */; };
 		074E27F7E57119CE5D495EF8 /* SavedProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */; };
 		07AE064DECC642ECF164A536 /* BridgeToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20AB672BC3C14C19EFDCD06 /* BridgeToken.swift */; };
@@ -62,6 +65,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewParser.swift; sourceTree = "<group>"; };
+		A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewDispatch.swift; sourceTree = "<group>"; };
+		A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewLoopTests.swift; sourceTree = "<group>"; };
 		02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeAuthTests.swift; sourceTree = "<group>"; };
 		06EC10ADF3979348276DA1D2 /* ChatGPTReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReviewStore.swift; sourceTree = "<group>"; };
 		077B859A5F6BEF981E3F75B4 /* SavedProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStore.swift; sourceTree = "<group>"; };
@@ -131,6 +137,7 @@
 		C25AE5B96E6B6AA0A33F8C68 /* AiflowMenuBarTests */ = {
 			isa = PBXGroup;
 			children = (
+				A101A203A101A203A101A203 /* ChatGPTReviewLoopTests.swift */,
 				CCDAD6743BDD494F5DD126FA /* AiflowCLITests.swift */,
 				7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */,
 				02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */,
@@ -157,6 +164,8 @@
 		F8198B7D2C67F60C5E574180 /* AiflowMenuBar */ = {
 			isa = PBXGroup;
 			children = (
+				A101A201A101A201A101A201 /* ChatGPTReviewParser.swift */,
+				A101A202A101A202A101A202 /* ChatGPTReviewDispatch.swift */,
 				296566CE1CC61DF812B3A9C1 /* AiflowBridgeServer.swift */,
 				491B8DAA98C6CBD75065A582 /* AiflowCLI.swift */,
 				8263F7F567402427CC0BECF4 /* AiflowMenuBarApp.swift */,
@@ -265,6 +274,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A101A101A101A101A101A101 /* ChatGPTReviewParser.swift in Sources */,
+				A101A102A101A102A101A102 /* ChatGPTReviewDispatch.swift in Sources */,
 				E983B232A72DD590F96D24A7 /* AiflowBridgeServer.swift in Sources */,
 				B8FE567CB4A72180E4D1233B /* AiflowCLI.swift in Sources */,
 				0F740479FE61F4333251DA36 /* AiflowMenuBarApp.swift in Sources */,
@@ -295,6 +306,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A101A103A101A103A101A103 /* ChatGPTReviewLoopTests.swift in Sources */,
 				FD2E512C9A4E9344309CC60B /* AiflowCLITests.swift in Sources */,
 				538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */,
 				32518D4DB3BA7C9A02C30696 /* BridgeAuthTests.swift in Sources */,

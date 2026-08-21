@@ -5,6 +5,8 @@ enum RunResultHandoffStoreError: Error, Equatable {
     case conflictingExistingRecord
     case conflictingDeliveredRecord
     case handoffNotFound
+    case unreadableDeliveredRecord
+    case invalidDeliveredRecord
 }
 
 /// Durable local outbox for terminal Aiflow results.
@@ -118,6 +120,29 @@ final class RunResultHandoffStore {
         }
 
         return decode(from: deliveredFileURL(for: runId))
+    }
+
+    /// A dispatch boundary must distinguish missing evidence from unreadable evidence.
+    func validatedDeliveredHandoff(runId: String) throws -> RunResultHandoff? {
+        guard isValidRunId(runId) else {
+            throw RunResultHandoffStoreError.invalidRunId
+        }
+        let url = deliveredFileURL(for: runId)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        let handoff: RunResultHandoff
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            handoff = try decoder.decode(RunResultHandoff.self, from: Data(contentsOf: url))
+        } catch {
+            throw RunResultHandoffStoreError.unreadableDeliveredRecord
+        }
+        guard handoff.schemaVersion == RunResultHandoff.currentSchemaVersion,
+              handoff.runId == runId else {
+            throw RunResultHandoffStoreError.invalidDeliveredRecord
+        }
+        return handoff
     }
 
     func pendingHandoffs() -> [RunResultHandoff] {

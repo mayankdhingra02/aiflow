@@ -25,6 +25,7 @@ enum BridgeEventType: String, Codable {
     /// v2: asks the companion to execute a run through the official Codex extension. This is
     /// the only event carrying execution parameters, and it travels app -> companion only.
     case executeRun = "execute_run"
+    case executeFollowup = "execute_followup"
     /// v2: asks the companion to interrupt the official turn serving this exact run.
     case cancelRun = "cancel_run"
 }
@@ -123,6 +124,8 @@ struct BridgeEvent: Codable, Equatable {
     var runId: String?
     var workspacePath: String?
     var prompt: String?
+    var parentRunId: String?
+    var conversationId: String?
 
     init(type: BridgeEventType) {
         self.type = type
@@ -328,6 +331,22 @@ extension BridgeEvent {
     static func cancelRun(runId: String) -> BridgeEvent {
         var event = BridgeEvent(type: .cancelRun)
         event.runId = runId
+        return event
+    }
+
+    static func executeFollowup(
+        runId: String, parentRunId: String, project: SavedProject,
+        conversationId: String, prompt: String, model: String, effort: String
+    ) -> BridgeEvent {
+        var event = BridgeEvent(type: .executeFollowup)
+        event.runId = runId
+        event.parentRunId = parentRunId
+        event.workspacePath = project.path
+        event.project = project.name
+        event.conversationId = conversationId
+        event.prompt = prompt
+        event.model = model
+        event.effort = effort
         return event
     }
 

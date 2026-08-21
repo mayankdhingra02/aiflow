@@ -14,6 +14,7 @@ final class HandoffTransportServer: @unchecked Sendable {
     private let store: RunResultHandoffStore
     private let reviewStore: ChatGPTReviewStore
     private let token: String?
+    private let onReviewPersisted: ((ChatGPTReview) -> Void)?
 
     private let queue =
         DispatchQueue(label: "aiflow.handoff.transport")
@@ -32,12 +33,14 @@ final class HandoffTransportServer: @unchecked Sendable {
         port: UInt16 = HandoffTransportServer.defaultPort,
         store: RunResultHandoffStore,
         reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
-        token: String? = HandoffToken.loadOrCreate()
+        token: String? = HandoffToken.loadOrCreate(),
+        onReviewPersisted: ((ChatGPTReview) -> Void)? = nil
     ) {
         self.port = port
         self.store = store
         self.reviewStore = reviewStore
         self.token = token
+        self.onReviewPersisted = onReviewPersisted
     }
 
     var boundPort: UInt16 {
@@ -425,7 +428,9 @@ final class HandoffTransportServer: @unchecked Sendable {
                 code = "handoff_not_found"
 
             case .conflictingExistingRecord,
-                 .conflictingDeliveredRecord:
+                 .conflictingDeliveredRecord,
+                 .unreadableDeliveredRecord,
+                 .invalidDeliveredRecord:
                 code = "handoff_conflict"
             }
 
@@ -488,6 +493,7 @@ final class HandoffTransportServer: @unchecked Sendable {
 
         do {
             try reviewStore.persist(review)
+            onReviewPersisted?(review)
             send(.reviewAck(runId: runId), to: connection)
         } catch ChatGPTReviewStoreError.conflictingExistingRecord {
             send(.error("review_conflict", runId: runId), to: connection)

@@ -44,6 +44,7 @@ export interface WorkerRunRequest {
     prompt: string;
     model?: string;
     effort?: string;
+    conversationId?: string;
 }
 
 export interface WorkerHandle {
@@ -129,7 +130,7 @@ export class OfficialCodexWorker {
         const findSession = this.deps.findSession ?? findSessionFile;
 
         // 1. Which official conversation should this run use?
-        const conversationId = await this.deps.resolveConversation(request);
+        const conversationId = request.conversationId ?? await this.deps.resolveConversation(request);
         if (!conversationId || isProvisionalConversationId(conversationId)) {
             throw new WorkerError(
                 'thread_unavailable',
