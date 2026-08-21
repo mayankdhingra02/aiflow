@@ -120,6 +120,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
 
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .stopped)
         XCTAssertTrue(harness.recorder.events.isEmpty)
+        XCTAssertEqual(harness.viewModel.currentReviewLoopStatus?.verdict, .ship)
+        XCTAssertEqual(harness.viewModel.currentReviewLoopStatus?.dispatchState, .stopped)
     }
 
     func testReviewWithExistingDispatchDoesNotDuplicate() throws {
@@ -155,6 +157,9 @@ final class ChatGPTReviewLoopTests: XCTestCase {
 
         XCTAssertTrue(harness.recorder.events.isEmpty)
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .pending)
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertNotNil(harness.viewModel.reviewAutomationBlockReason)
+        XCTAssertTrue(harness.viewModel.recentReviewLoopRecords.isEmpty)
     }
 
     func testRestartStateSemanticsNeverResendAmbiguousRecords() throws {
@@ -326,6 +331,119 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         )
     }
 
+    func testReviewShipNotificationIsDeliveredOnce() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistEvidence(
+            runId: runId,
+            message: "# Implementation Review\n\n## Verdict\n\nSHIP",
+            harness: harness
+        )
+        harness.viewModel.setNotificationsAvailableForTesting(true)
+
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.reconcileReviewsForTesting()
+
+        XCTAssertEqual(notifications.shipProjects, [harness.project.name])
+    }
+
+    func testManualAttentionNotificationAndRecheckNeverResendAmbiguousDispatch() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        try harness.dispatchStore.prepare(sampleDispatch(
+            sourceRunId: runId,
+            project: harness.project,
+            instruction: "A different instruction."
+        ))
+        harness.viewModel.setNotificationsAvailableForTesting(true)
+        harness.viewModel.setOfficialWorkerAvailable(true)
+
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.recheckReviewEvidence()
+
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+        XCTAssertEqual(notifications.manualAttentionProjects, [harness.project.name])
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+        XCTAssertEqual(harness.viewModel.reviewManualAttentionCount, 1)
+
+        harness.viewModel.applyConfigForTesting(CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low"],
+            defaultSandbox: "workspace-write"
+        ))
+        try FileManager.default.createDirectory(
+            atPath: harness.project.path,
+            withIntermediateDirectories: true
+        )
+        let record = try XCTUnwrap(harness.viewModel.currentReviewLoopStatus)
+        XCTAssertTrue(harness.viewModel.canStartManualRecoveryRun(record))
+        harness.viewModel.requestManualRecoveryRun(record)
+        XCTAssertEqual(harness.viewModel.confirmingProject?.id, harness.project.id)
+        XCTAssertTrue(harness.viewModel.confirmationPromptPreview.contains("Fix it."))
+        XCTAssertFalse(harness.viewModel.confirmationPromptPreview.contains("A different instruction."))
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+        harness.viewModel.cancelConfirmation()
+    }
+
+    func testBlockedEvidenceRecheckRequiresSuccessfulIntegrityValidation() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        harness.viewModel.setNotificationsAvailableForTesting(true)
+        try FileManager.default.createDirectory(
+            at: harness.reviewStore.directoryURL,
+            withIntermediateDirectories: true
+        )
+        let corrupt = harness.reviewStore.directoryURL.appendingPathComponent("corrupt.json")
+        try Data("not-json".utf8).write(to: corrupt)
+
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.recheckReviewEvidence()
+
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertEqual(notifications.blockReasons.count, 1)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+
+        try FileManager.default.removeItem(at: corrupt)
+        harness.viewModel.recheckReviewEvidence()
+
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+    }
+
+    func testSuccessfulRecheckResumesOnlyValidatedPendingReview() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .pending)
+
+        try FileManager.default.createDirectory(
+            at: harness.reviewStore.directoryURL,
+            withIntermediateDirectories: true
+        )
+        let corrupt = harness.reviewStore.directoryURL.appendingPathComponent("corrupt.json")
+        try Data("not-json".utf8).write(to: corrupt)
+        harness.viewModel.reconcileReviewsForTesting()
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+
+        try FileManager.default.removeItem(at: corrupt)
+        harness.viewModel.setOfficialWorkerAvailable(true)
+        harness.viewModel.recheckReviewEvidence()
+
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertEqual(harness.recorder.events.count, 1)
+        XCTAssertEqual(harness.recorder.events.first?.type, .executeFollowup)
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .dispatching)
+    }
+
     private func parse(_ text: String) throws -> ParsedChatGPTReview {
         try ChatGPTReviewParser.parse(ChatGPTReview(
             runId: UUID().uuidString, conversationId: "chat", sourceChatURL: "https://chatgpt.com/c/chat",
@@ -358,7 +476,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
     }
 
     private func makeHarness(
-        beforeWrite: ((ChatGPTReviewDispatch) throws -> Void)? = nil
+        beforeWrite: ((ChatGPTReviewDispatch) throws -> Void)? = nil,
+        notifications: NotificationManaging? = nil
     ) throws -> Harness {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -386,7 +505,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             defaults: defaults,
             detectChat: { nil },
             validateGit: { .repository(root: $0) },
-            notifications: SilentNotifications(),
+            notifications: notifications ?? SilentNotifications(),
             handoffStore: handoffStore,
             reviewStore: reviewStore,
             reviewDispatchStore: dispatchStore,
@@ -461,6 +580,24 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         func sendCompletion(for project: SavedProject) {}
         func sendFailure(for project: SavedProject?) {}
         func removePendingRequest(id: CodexRequestID) {}
+    }
+
+    private final class RecordingNotifications: NotificationManaging {
+        var shipProjects: [String] = []
+        var manualAttentionProjects: [String] = []
+        var blockReasons: [String] = []
+
+        func prepareForRun() async -> Bool { true }
+        func sendApproval(for request: ApprovalRequest) {}
+        func sendQuestion(for question: UserQuestion) {}
+        func sendCompletion(for project: SavedProject) {}
+        func sendFailure(for project: SavedProject?) {}
+        func removePendingRequest(id: CodexRequestID) {}
+        func sendReviewShipped(projectName: String) { shipProjects.append(projectName) }
+        func sendReviewNeedsAttention(projectName: String, reason: String) {
+            manualAttentionProjects.append(projectName)
+        }
+        func sendReviewAutomationBlocked(reason: String) { blockReasons.append(reason) }
     }
 
     private struct Harness {

@@ -153,6 +153,12 @@ final class RunResultHandoffStore {
         loadHandoffs(from: deliveredDirectoryURL)
     }
 
+    /// Read-only diagnostic location for immutable delivered handoff evidence.
+    func deliveredEvidenceURL(runId: String) throws -> URL {
+        guard isValidRunId(runId) else { throw RunResultHandoffStoreError.invalidRunId }
+        return deliveredFileURL(for: runId)
+    }
+
     /// Marks one exact run as delivered.
     ///
     /// This is idempotent. If the pending record has already been moved to

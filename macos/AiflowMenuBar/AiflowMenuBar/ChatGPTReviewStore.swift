@@ -63,6 +63,14 @@ final class ChatGPTReviewStore {
         return load(url: recordURL(runId: runId))
     }
 
+    /// Read-only diagnostic location for the immutable review evidence.
+    func evidenceURL(runId: String) throws -> URL {
+        guard UUID(uuidString: runId) != nil else {
+            throw ChatGPTReviewStoreError.invalidRunId
+        }
+        return recordURL(runId: runId)
+    }
+
     /// Execution-sensitive reads must distinguish absent evidence from corrupt evidence.
     func validatedReview(runId: String) throws -> ChatGPTReview? {
         guard UUID(uuidString: runId) != nil else {
