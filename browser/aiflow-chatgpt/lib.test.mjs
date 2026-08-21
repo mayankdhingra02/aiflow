@@ -173,7 +173,9 @@ test(
           name: "demo"
         },
         execution: {
-          worker: "official-vscode"
+          worker: "official-vscode",
+          modelRole: "terra",
+          effort: "medium"
         },
         result: {
           finalMessage: "Tests passed."
@@ -195,7 +197,12 @@ test(
       /# Implementation Review/
     );
     assert.match(text, /## Verdict/);
+    assert.match(text, /Previous Codex execution: Model: terra; Reasoning: medium/);
+    assert.match(text, /## Codex Execution/);
     assert.match(text, /## Codex Instruction/);
+    assert.match(text, /Allowed Model values: luna, terra, sol\./);
+    assert.match(text, /Allowed Reasoning values: low, medium, high, xhigh\./);
+    assert.match(text, /For SHIP, include neither Codex Execution nor Codex Instruction\./);
   }
 );
 
