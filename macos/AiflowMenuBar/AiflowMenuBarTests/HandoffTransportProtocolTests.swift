@@ -3,6 +3,10 @@ import XCTest
 @testable import AiflowMenuBar
 
 final class HandoffTransportProtocolTests: XCTestCase {
+    func testCurrentProtocolVersionIsTwo() {
+        XCTAssertEqual(HandoffTransport.protocolVersion, 2)
+    }
+
     func testAuthCommandRoundTrips() throws {
         let original =
             HandoffClientCommand.auth(
@@ -56,7 +60,7 @@ final class HandoffTransportProtocolTests: XCTestCase {
 
         XCTAssertTrue(
             text.contains(
-                #""protocolVersion":1"#
+                #""protocolVersion":2"#
             )
         )
 
@@ -111,6 +115,13 @@ final class HandoffTransportProtocolTests: XCTestCase {
             event.runId,
             runId
         )
+    }
+
+    func testReviewCommandAndAcknowledgementRoundTrip() throws {
+        let command = HandoffClientCommand.review(runId: UUID().uuidString, conversationId: "chat-one", assistantMessage: "Review complete.")
+        let data = try XCTUnwrap(HandoffTransportCodec.encodeClientCommand(command))
+        XCTAssertEqual(HandoffTransportCodec.decodeClientCommand(data), command)
+        XCTAssertEqual(HandoffServerEvent.reviewAck(runId: command.runId!).type, .reviewAck)
     }
 
     private func sampleHandoff()

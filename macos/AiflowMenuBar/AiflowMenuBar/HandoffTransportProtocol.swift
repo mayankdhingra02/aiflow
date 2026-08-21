@@ -1,7 +1,7 @@
 import Foundation
 
 enum HandoffTransport {
-    static let protocolVersion = 1
+    static let protocolVersion = 2
     static let maximumInboundMessageBytes = 64 * 1024
 }
 
@@ -9,6 +9,7 @@ enum HandoffClientCommandType: String, Codable, Equatable {
     case auth
     case next
     case delivered
+    case review
     case ping
 }
 
@@ -16,12 +17,18 @@ struct HandoffClientCommand: Codable, Equatable {
     let type: HandoffClientCommandType
     var token: String?
     var runId: String?
+    var protocolVersion: Int?
+    var conversationId: String?
+    var assistantMessage: String?
 
-    static func auth(token: String) -> HandoffClientCommand {
+    static func auth(token: String, protocolVersion: Int = HandoffTransport.protocolVersion) -> HandoffClientCommand {
         HandoffClientCommand(
             type: .auth,
             token: token,
-            runId: nil
+            runId: nil,
+            protocolVersion: protocolVersion,
+            conversationId: nil,
+            assistantMessage: nil
         )
     }
 
@@ -29,7 +36,7 @@ struct HandoffClientCommand: Codable, Equatable {
         HandoffClientCommand(
             type: .next,
             token: nil,
-            runId: nil
+            runId: nil, protocolVersion: nil, conversationId: nil, assistantMessage: nil
         )
     }
 
@@ -39,15 +46,19 @@ struct HandoffClientCommand: Codable, Equatable {
         HandoffClientCommand(
             type: .delivered,
             token: nil,
-            runId: runId
+            runId: runId, protocolVersion: nil, conversationId: nil, assistantMessage: nil
         )
+    }
+
+    static func review(runId: String, conversationId: String, assistantMessage: String) -> HandoffClientCommand {
+        HandoffClientCommand(type: .review, token: nil, runId: runId, protocolVersion: nil, conversationId: conversationId, assistantMessage: assistantMessage)
     }
 
     static func ping() -> HandoffClientCommand {
         HandoffClientCommand(
             type: .ping,
             token: nil,
-            runId: nil
+            runId: nil, protocolVersion: nil, conversationId: nil, assistantMessage: nil
         )
     }
 }
@@ -59,6 +70,7 @@ enum HandoffServerEventType: String, Codable, Equatable {
     case handoff
     case empty
     case deliveredAck = "delivered_ack"
+    case reviewAck = "review_ack"
     case error
 }
 
@@ -105,6 +117,10 @@ struct HandoffServerEvent: Codable, Equatable {
             type: .deliveredAck,
             runId: runId
         )
+    }
+
+    static func reviewAck(runId: String) -> HandoffServerEvent {
+        HandoffServerEvent(type: .reviewAck, runId: runId)
     }
 
     static func error(
