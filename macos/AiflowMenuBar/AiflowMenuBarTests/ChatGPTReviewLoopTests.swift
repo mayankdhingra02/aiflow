@@ -79,9 +79,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         defer { harness.remove() }
         let runId = UUID().uuidString
         try persistChangesRequestedEvidence(runId: runId, harness: harness)
-        try harness.dispatchStore.prepare(sampleDispatch(
-            sourceRunId: runId, project: harness.project
-        ))
+        harness.viewModel.reconcileReviewsForTesting()
 
         harness.viewModel.setOfficialWorkerAvailable(true)
 
@@ -294,7 +292,6 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             sourceRunId = followUpRunId
         }
         try persistChangesRequestedEvidence(runId: sourceRunId, harness: harness)
-        harness.viewModel.setOfficialWorkerAvailable(true)
 
         harness.viewModel.reconcileReviewsForTesting()
 
@@ -369,26 +366,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
         XCTAssertEqual(notifications.manualAttentionProjects, [harness.project.name])
         XCTAssertTrue(harness.recorder.events.isEmpty)
-        XCTAssertEqual(harness.viewModel.reviewManualAttentionCount, 1)
-
-        harness.viewModel.applyConfigForTesting(CodexConfig(
-            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
-            reasoningEfforts: ["low"],
-            defaultSandbox: "workspace-write"
-        ))
-        try FileManager.default.createDirectory(
-            atPath: harness.project.path,
-            withIntermediateDirectories: true
-        )
-        let record = try XCTUnwrap(harness.viewModel.currentReviewLoopStatus)
-        XCTAssertTrue(harness.viewModel.canStartManualRecoveryRun(record))
-        harness.viewModel.requestManualRecoveryRun(record)
-        XCTAssertEqual(harness.viewModel.confirmingProject?.id, harness.project.id)
-        XCTAssertTrue(harness.viewModel.confirmationPromptPreview.contains("Fix it."))
-        XCTAssertFalse(harness.viewModel.confirmationPromptPreview.contains("A different instruction."))
-        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
-        XCTAssertTrue(harness.recorder.events.isEmpty)
-        harness.viewModel.cancelConfirmation()
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertTrue(harness.viewModel.recentReviewLoopRecords.isEmpty)
     }
 
     func testBlockedEvidenceRecheckRequiresSuccessfulIntegrityValidation() throws {
@@ -444,6 +423,116 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .dispatching)
     }
 
+    func testRecheckBlocksShipReviewPairedWithChangesRequestedDispatch() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistEvidence(
+            runId: runId,
+            message: "# Implementation Review\n\n## Verdict\n\nSHIP",
+            harness: harness
+        )
+        try harness.dispatchStore.prepare(sampleDispatch(sourceRunId: runId, project: harness.project))
+
+        assertCrossStoreMismatchBlocks(harness)
+    }
+
+    func testRecheckBlocksDifferentAssistantMessage() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        try harness.dispatchStore.prepare(sampleDispatch(
+            sourceRunId: runId,
+            project: harness.project,
+            assistantMessage: "A different assistant response."
+        ))
+
+        assertCrossStoreMismatchBlocks(harness)
+    }
+
+    func testRecheckBlocksDifferentConversationId() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        try harness.dispatchStore.prepare(sampleDispatch(
+            sourceRunId: runId,
+            project: harness.project,
+            conversationId: "different-chat"
+        ))
+
+        assertCrossStoreMismatchBlocks(harness)
+    }
+
+    func testRecheckBlocksDifferentParsedInstructionAndCopyFailsClosed() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        try harness.dispatchStore.prepare(sampleDispatch(
+            sourceRunId: runId,
+            project: harness.project,
+            instruction: "A different instruction."
+        ))
+
+        assertCrossStoreMismatchBlocks(harness)
+        harness.viewModel.copyReviewInstruction(mismatchRecord(runId: runId))
+        XCTAssertEqual(harness.viewModel.notice, "Review evidence is inconsistent; instruction was not copied.")
+    }
+
+    func testHandoffProjectAndCodexMismatchBlockManualRecovery() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        let wrongProject = RunResultHandoff.ProjectContext(
+            id: UUID(), name: "wrong", path: "/tmp/wrong"
+        )
+        try harness.dispatchStore.prepare(sampleDispatch(
+            sourceRunId: runId,
+            projectContext: wrongProject,
+            codexConversationId: "different-codex",
+            state: .manualAttention
+        ))
+        harness.viewModel.applyConfigForTesting(CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low"],
+            defaultSandbox: "workspace-write"
+        ))
+
+        assertCrossStoreMismatchBlocks(harness)
+        XCTAssertFalse(harness.viewModel.canStartManualRecoveryRun(mismatchRecord(runId: runId)))
+    }
+
+    func testCorrelatedManualRecoveryUsesImmutableHandoffProjectAndInstruction() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        try harness.dispatchStore.update(
+            sourceRunId: runId,
+            state: .manualAttention,
+            reason: "dispatch outcome was ambiguous across restart"
+        )
+        try FileManager.default.createDirectory(atPath: harness.project.path, withIntermediateDirectories: true)
+        harness.viewModel.applyConfigForTesting(CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low"],
+            defaultSandbox: "workspace-write"
+        ))
+        harness.viewModel.reconcileReviewsForTesting()
+        let record = try XCTUnwrap(harness.viewModel.currentReviewLoopStatus)
+
+        XCTAssertTrue(harness.viewModel.canStartManualRecoveryRun(record))
+        harness.viewModel.requestManualRecoveryRun(record)
+        XCTAssertEqual(harness.viewModel.confirmingProject?.id, harness.project.id)
+        XCTAssertTrue(harness.viewModel.confirmationPromptPreview.contains("Fix it."))
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
+    }
+
     private func parse(_ text: String) throws -> ParsedChatGPTReview {
         try ChatGPTReviewParser.parse(ChatGPTReview(
             runId: UUID().uuidString, conversationId: "chat", sourceChatURL: "https://chatgpt.com/c/chat",
@@ -456,6 +545,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         followUpRunId: String? = UUID().uuidString,
         project: SavedProject? = nil,
         projectContext: RunResultHandoff.ProjectContext? = nil,
+        conversationId: String = "chat",
+        assistantMessage: String = "# Implementation Review\n\n## Verdict\n\nCHANGES_REQUESTED\n\n## Codex Instruction\n\nFix it.",
         codexConversationId: String = "codex-chat",
         instruction: String = "Fix it.",
         lineageDepth: Int = 1,
@@ -465,8 +556,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             .init(id: $0.id, name: $0.name, path: $0.path)
         } ?? .init(id: UUID(), name: "demo", path: "/tmp/demo")
         return ChatGPTReviewDispatch(
-            schemaVersion: 1, sourceRunId: sourceRunId, conversationId: "chat", reviewCapturedAt: date,
-            assistantMessage: "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Instruction\nFix it.",
+            schemaVersion: 1, sourceRunId: sourceRunId, conversationId: conversationId, reviewCapturedAt: date,
+            assistantMessage: assistantMessage,
             verdict: "CHANGES_REQUESTED", instruction: instruction, followUpRunId: followUpRunId,
             parentRunId: followUpRunId == nil ? nil : sourceRunId, project: context,
             codexConversationId: codexConversationId, modelRole: "terra",
@@ -558,6 +649,32 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             assistantMessage: message,
             capturedAt: date
         ))
+    }
+
+    private func assertCrossStoreMismatchBlocks(_ harness: Harness) {
+        harness.viewModel.setOfficialWorkerAvailable(true)
+        harness.viewModel.recheckReviewEvidence()
+
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertTrue(harness.viewModel.recentReviewLoopRecords.isEmpty)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+    }
+
+    private func mismatchRecord(runId: String) -> ReviewLoopReadModel.Record {
+        ReviewLoopReadModel.Record(
+            sourceRunId: runId,
+            projectName: "demo",
+            conversationId: "chat",
+            codexConversationId: "codex-chat",
+            capturedAt: date,
+            verdict: .changesRequested,
+            dispatchState: .manualAttention,
+            followUpRunId: UUID().uuidString,
+            lineageDepth: 1,
+            terminalReason: "evidence mismatch",
+            assistantPreview: "review",
+            instructionPreview: "Fix it."
+        )
     }
 
     private enum TestError: Error {

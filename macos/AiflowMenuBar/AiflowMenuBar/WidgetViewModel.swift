@@ -492,15 +492,15 @@ final class WidgetViewModel: ObservableObject {
         guard record.needsManualAttention,
               !runState.isBusy,
               resolvedModelId != nil,
-              let dispatch = try? reviewDispatchStore.record(sourceRunId: record.sourceRunId),
-              let review = try? reviewStore.validatedReview(runId: record.sourceRunId),
-              review.runId == dispatch.sourceRunId,
-              review.conversationId == dispatch.conversationId,
-              let parsed = try? ChatGPTReviewParser.parse(review),
+              let evidence = try? correlatedReviewEvidence(for: record.sourceRunId),
+              let parsed = try? ChatGPTReviewParser.parse(evidence.review),
               case .changesRequested(let instruction) = parsed,
-              let project = store.project(withPath: dispatch.project.path),
+              let project = store.project(withPath: evidence.handoff.project.path),
+              project.id == evidence.handoff.project.id,
+              project.name == evidence.handoff.project.name,
+              project.path == evidence.handoff.project.path,
               project.exists else { return nil }
-        return (dispatch, instruction, project)
+        return (evidence.dispatch, instruction, project)
     }
 
     /// Resolves the return destination at dispatch time.
@@ -1140,9 +1140,10 @@ final class WidgetViewModel: ObservableObject {
 
     private func refreshReviewLoopStatus() {
         do {
+            let evidence = try reviewLoopEvidenceSnapshot()
             let snapshot = ReviewLoopReadModel.make(
-                reviews: try reviewStore.allReviews(),
-                dispatches: try reviewDispatchStore.allRecords()
+                reviews: evidence.reviews,
+                dispatches: evidence.dispatches
             )
             recentReviewLoopRecords = snapshot.records
             reviewManualAttentionCount = snapshot.manualAttentionCount
@@ -1162,8 +1163,7 @@ final class WidgetViewModel: ObservableObject {
 
     func recheckReviewEvidence() {
         do {
-            _ = try reviewStore.allReviews()
-            _ = try reviewDispatchStore.allRecords()
+            _ = try reviewLoopEvidenceSnapshot()
             reviewAutomationBlocked = false
             reviewAutomationBlockReason = nil
             reconcileDurableReviewsAndResume()
@@ -1211,12 +1211,42 @@ final class WidgetViewModel: ObservableObject {
     }
 
     func copyReviewInstruction(_ record: ReviewLoopReadModel.Record) {
-        guard let dispatch = try? reviewDispatchStore.record(sourceRunId: record.sourceRunId),
-              let instruction = dispatch.instruction else {
-            notice = "No follow-up instruction is available for this review."
-            return
+        do {
+            let evidence = try correlatedReviewEvidence(for: record.sourceRunId)
+            guard case .changesRequested(let instruction) = try ChatGPTReviewParser.parse(evidence.review)
+            else {
+                notice = "No follow-up instruction is available for this review."
+                return
+            }
+            copyToPasteboard(instruction, notice: "Copied follow-up instruction.")
+        } catch {
+            notice = "Review evidence is inconsistent; instruction was not copied."
         }
-        copyToPasteboard(instruction, notice: "Copied follow-up instruction.")
+    }
+
+    private func reviewLoopEvidenceSnapshot() throws -> (
+        reviews: [ChatGPTReview], dispatches: [ChatGPTReviewDispatch]
+    ) {
+        let reviews = try reviewStore.allReviews()
+        let dispatches = try reviewDispatchStore.allRecords()
+        try ReviewLoopEvidenceValidator.validate(
+            reviews: reviews,
+            dispatches: dispatches,
+            handoffForRunId: { try handoffStore.validatedDeliveredHandoff(runId: $0) }
+        )
+        return (reviews, dispatches)
+    }
+
+    private func correlatedReviewEvidence(for sourceRunId: String) throws -> (
+        review: ChatGPTReview, dispatch: ChatGPTReviewDispatch, handoff: RunResultHandoff
+    ) {
+        guard let review = try reviewStore.validatedReview(runId: sourceRunId),
+              let dispatch = try reviewDispatchStore.record(sourceRunId: sourceRunId),
+              let handoff = try handoffStore.validatedDeliveredHandoff(runId: sourceRunId) else {
+            throw ReviewLoopEvidenceError.inconsistentEvidence
+        }
+        try ReviewLoopEvidenceValidator.validate(review: review, dispatch: dispatch, handoff: handoff)
+        return (review, dispatch, handoff)
     }
 
     private func copyToPasteboard(_ value: String, notice: String) {

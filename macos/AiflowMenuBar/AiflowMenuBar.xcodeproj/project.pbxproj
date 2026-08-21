@@ -19,6 +19,7 @@
 		32518D4DB3BA7C9A02C30696 /* BridgeAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02F142540A3292517ED3E4BF /* BridgeAuthTests.swift */; };
 		44404A592186B811B3FA90F8 /* BrowserURLDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CC7DBF415D77962F582249 /* BrowserURLDetector.swift */; };
 		45FC687B867651D7D8D5C9A0 /* HandoffTransportServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7885F26343CD4FF23777CE64 /* HandoffTransportServerTests.swift */; };
+		4701DAEED8C79485CB72D7B2 /* ReviewLoopEvidenceValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6324E5EFBA9DF45F9C1C25F0 /* ReviewLoopEvidenceValidator.swift */; };
 		4FA04480A556FB113481DE4E /* ChatGPTReviewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDC2A2DEF106C0DA72468D8 /* ChatGPTReviewStoreTests.swift */; };
 		538343F7C54572244EB4A1FC /* ApprovalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B2337E8A3F706AEE66C2041 /* ApprovalStateTests.swift */; };
 		55FB3B449411417ECCD6CEC9 /* ProjectButtonBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985EB2ADEA7CCBE9AFF4CCC5 /* ProjectButtonBehaviorTests.swift */; };
@@ -92,6 +93,7 @@
 		5E164D39B25B0E0E418A646B /* ChatGPTReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTReview.swift; sourceTree = "<group>"; };
 		5F8043352AF26D75EA57ADAA /* ChatProjectMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatProjectMap.swift; sourceTree = "<group>"; };
 		60E4490A77F815FE60755AF7 /* HandoffTokenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTokenTests.swift; sourceTree = "<group>"; };
+		6324E5EFBA9DF45F9C1C25F0 /* ReviewLoopEvidenceValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewLoopEvidenceValidator.swift; sourceTree = "<group>"; };
 		6CF2C6552E7305D42D9FD6A4 /* HandoffTransportProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTransportProtocolTests.swift; sourceTree = "<group>"; };
 		73029581FB768294AD9CD1AC /* HandoffTransportProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffTransportProtocol.swift; sourceTree = "<group>"; };
 		74283B708E0DFB2729B44F56 /* SavedProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectStoreTests.swift; sourceTree = "<group>"; };
@@ -191,6 +193,7 @@
 				24D7F798D8218B948EFFE9B4 /* MenuBarView.swift */,
 				7F25D8E351B8F533ADD42379 /* Models.swift */,
 				97E859A74BB6436A2CB1B244 /* NotificationManager.swift */,
+				6324E5EFBA9DF45F9C1C25F0 /* ReviewLoopEvidenceValidator.swift */,
 				8B955B993FCF6648AE817BC0 /* ReviewLoopReadModel.swift */,
 				B5B8BFA1FDD5E1597FA82E7D /* RunResultHandoff.swift */,
 				552F87C8F149BE18672BF51F /* RunResultHandoffStore.swift */,
@@ -301,6 +304,7 @@
 				9EBBD1E2508A174ABBD6757E /* MenuBarView.swift in Sources */,
 				AA34D9FAEEDE08F9EB291E84 /* Models.swift in Sources */,
 				05C82C55815F9BB27800D90A /* NotificationManager.swift in Sources */,
+				4701DAEED8C79485CB72D7B2 /* ReviewLoopEvidenceValidator.swift in Sources */,
 				A8BAD1770A8E4D2FCC74F724 /* ReviewLoopReadModel.swift in Sources */,
 				C337CCD0E293BFA434C14C67 /* RunResultHandoff.swift in Sources */,
 				9B67C72105991DA755C86AA9 /* RunResultHandoffStore.swift in Sources */,
