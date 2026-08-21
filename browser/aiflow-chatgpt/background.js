@@ -302,6 +302,11 @@ async function handleServerMessage(
 
       await markDeliveryAcknowledged(event.runId);
 
+      // The review may have been captured before the server
+      // durably recorded delivery. Retry pending evidence now
+      // that delivery is guaranteed to exist server-side.
+      await submitPendingReviews();
+
       requestNextSoon(100);
       break;
 
