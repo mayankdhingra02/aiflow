@@ -5,7 +5,8 @@ import {
   reviewMessageIsBounded,
   buildRoutingMessage,
   buildRoutingResponseCommand,
-  routingMessageIsBounded
+  routingMessageIsBounded,
+  createChannelAdmission
 } from "./lib.js";
 
 const WS_URL =
@@ -19,7 +20,7 @@ const HEARTBEAT_MS = 20000;
 let socket = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
-let processing = false;
+const channelAdmission = createChannelAdmission();
 let authenticated = false;
 let connecting = false;
 let authenticationRejected = false;
@@ -73,7 +74,7 @@ function reconnect() {
 
   authenticated = false;
   authenticationRejected = false;
-  processing = false;
+  channelAdmission.reset();
 
   const previousSocket = socket;
   socket = null;
@@ -194,7 +195,7 @@ async function connect() {
 
         socket = null;
         authenticated = false;
-        processing = false;
+        channelAdmission.reset();
 
         stopHeartbeat();
         scheduleReconnect();
@@ -235,7 +236,7 @@ async function handleServerMessage(
       if (event.protocolVersion !== PROTOCOL_VERSION) {
         authenticated = false;
         authenticationRejected = true;
-        processing = false;
+        channelAdmission.reset();
         stopHeartbeat();
 
         await chrome.storage.local.set({
@@ -321,6 +322,11 @@ async function handleServerMessage(
 
     case "routing":
       await handleRouting(event.routing);
+      break;
+
+    case "routing_delivered_ack":
+      // The durable browser correlation was written before injection. This acknowledgement
+      // adds no local state; it only confirms the server transitioned `delivering → delivered`.
       break;
 
     case "routing_empty":
@@ -423,8 +429,6 @@ async function handleServerMessage(
 }
 
 async function handleHandoff(handoff) {
-  if (processing) return;
-
   if (
     !handoff ||
     !handoff.runId ||
@@ -433,53 +437,56 @@ async function handleHandoff(handoff) {
     return;
   }
 
-  const stored =
-    await chrome.storage.local.get([
-      "blockedRunId",
-      "blockedReason",
-      "deliveryReceipts"
-    ]);
-
-  const receipt =
-    stored.deliveryReceipts?.[
-      handoff.runId
-    ];
-
-  if (
-    receipt ===
-      handoff.sourceChat
-        ?.conversationId
-  ) {
-    console.info(
-      "Aiflow already confirmed this ChatGPT delivery locally:",
-      handoff.runId
-    );
-
-    await rememberReviewCorrelation(handoff);
-
-    send({
-      type: "delivered",
-      runId: handoff.runId
-    });
-
+  if (!channelAdmission.enter("handoff")) {
+    console.info("Aiflow coalesced duplicate handoff delivery:", handoff.runId);
     return;
   }
-
-  if (
-    stored.blockedRunId ===
-      handoff.runId
-  ) {
-    console.warn(
-      "Aiflow delivery is blocked:",
-      stored.blockedReason
-    );
-
-    return;
-  }
-
-  processing = true;
 
   try {
+    const stored =
+      await chrome.storage.local.get([
+        "blockedRunId",
+        "blockedReason",
+        "deliveryReceipts"
+      ]);
+
+    const receipt =
+      stored.deliveryReceipts?.[
+        handoff.runId
+      ];
+
+    if (
+      receipt ===
+        handoff.sourceChat
+          ?.conversationId
+    ) {
+      console.info(
+        "Aiflow already confirmed this ChatGPT delivery locally:",
+        handoff.runId
+      );
+
+      await rememberReviewCorrelation(handoff);
+
+      send({
+        type: "delivered",
+        runId: handoff.runId
+      });
+
+      return;
+    }
+
+    if (
+      stored.blockedRunId ===
+        handoff.runId
+    ) {
+      console.warn(
+        "Aiflow delivery is blocked:",
+        stored.blockedReason
+      );
+
+      return;
+    }
+
     const result =
       await deliverToChatGPT(
         handoff
@@ -522,7 +529,7 @@ async function handleHandoff(handoff) {
       result.error
     );
   } finally {
-    processing = false;
+    channelAdmission.leave("handoff");
   }
 }
 
@@ -661,9 +668,18 @@ async function waitForTabReady(
 }
 
 async function handleRouting(request) {
-  if (processing || !request?.runId || !request.sourceChat?.url) return;
-  processing = true;
+  if (!request?.runId) return;
+  if (!channelAdmission.enter("routing")) {
+    // The active operation for this exact server channel remains responsible for the
+    // acknowledgement. Coalescing cannot strand it behind unrelated handoff work.
+    console.info("Aiflow coalesced duplicate routing delivery:", request.runId);
+    return;
+  }
   try {
+    if (!request.sourceChat?.url) {
+      send({ type: "routing_failed", runId: request.runId });
+      return;
+    }
     const target = canonicalChatURL(request.sourceChat.url);
     if (!target) {
       send({ type: "routing_failed", runId: request.runId });
@@ -701,7 +717,8 @@ async function handleRouting(request) {
   } catch {
     send({ type: "routing_failed", runId: request.runId });
   } finally {
-    processing = false;
+    channelAdmission.leave("routing");
+    requestRoutingSoon(100);
   }
 }
 
@@ -756,7 +773,7 @@ async function clearRoutingEvidence(runId, preservePendingFailure = false) {
 
 function requestRoutingSoon(delay) {
   setTimeout(() => {
-    if (authenticated && !processing) send({ type: "next_routing" });
+    if (authenticated && !channelAdmission.isActive("routing")) send({ type: "next_routing" });
   }, delay);
 }
 
@@ -938,7 +955,7 @@ function requestNextSoon(delay) {
   setTimeout(() => {
     if (
       authenticated &&
-      !processing
+      !channelAdmission.isActive("handoff")
     ) {
       send({
         type: "next"

@@ -145,3 +145,19 @@ export function buildRoutingMessage(request) {
 }
 export function routingMessageIsBounded(message) { const text = String(message ?? ""); return text.trim().length > 0 && new TextEncoder().encode(text).length <= 32 * 1024; }
 export function buildRoutingResponseCommand(response) { return { type: "routing_response", ...response }; }
+
+// Browser result and initial-routing delivery are independent server channels. A channel may
+// coalesce a duplicate while its first operation is active, but it must never block the other.
+export function createChannelAdmission() {
+  const active = new Set();
+  return {
+    enter(channel) {
+      if (active.has(channel)) return false;
+      active.add(channel);
+      return true;
+    },
+    leave(channel) { active.delete(channel); },
+    isActive(channel) { return active.has(channel); },
+    reset() { active.clear(); }
+  };
+}
