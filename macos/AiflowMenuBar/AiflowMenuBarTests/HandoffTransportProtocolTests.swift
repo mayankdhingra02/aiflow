@@ -3,8 +3,8 @@ import XCTest
 @testable import AiflowMenuBar
 
 final class HandoffTransportProtocolTests: XCTestCase {
-    func testCurrentProtocolVersionIsTwo() {
-        XCTAssertEqual(HandoffTransport.protocolVersion, 2)
+    func testCurrentProtocolVersionIsThree() {
+        XCTAssertEqual(HandoffTransport.protocolVersion, 3)
     }
 
     func testAuthCommandRoundTrips() throws {
@@ -60,7 +60,7 @@ final class HandoffTransportProtocolTests: XCTestCase {
 
         XCTAssertTrue(
             text.contains(
-                #""protocolVersion":2"#
+                #""protocolVersion":3"#
             )
         )
 
@@ -122,6 +122,27 @@ final class HandoffTransportProtocolTests: XCTestCase {
         let data = try XCTUnwrap(HandoffTransportCodec.encodeClientCommand(command))
         XCTAssertEqual(HandoffTransportCodec.decodeClientCommand(data), command)
         XCTAssertEqual(HandoffServerEvent.reviewAck(runId: command.runId!).type, .reviewAck)
+    }
+
+    func testRoutingCommandAndEventRoundTrip() throws {
+        let request = CodexInitialRoutingRequest(
+            schemaVersion: 1, runId: UUID().uuidString,
+            project: .init(id: UUID(), name: "demo", path: "/repos/demo"),
+            sourceChat: .init(url: "https://chatgpt.com/c/chat", conversationId: "chat"),
+            prompt: "Fix it", manualModelRole: "terra", manualModelId: "gpt-5.6-terra",
+            manualEffort: "medium", assistantMessage: nil, state: .pending,
+            createdAt: Date(), updatedAt: Date(), terminalReason: nil
+        )
+        let command = HandoffClientCommand.routingResponse(
+            runId: request.runId, conversationId: "chat", assistantMessage: "# Codex Routing\n## Model\nsol\n## Reasoning\nhigh"
+        )
+        XCTAssertEqual(HandoffTransportCodec.decodeClientCommand(try XCTUnwrap(HandoffTransportCodec.encodeClientCommand(command))), command)
+        let decoded = HandoffTransportCodec.decodeServerEvent(
+            try XCTUnwrap(HandoffTransportCodec.encodeServerEvent(.routing(request)))
+        )?.routing
+        XCTAssertEqual(decoded?.runId, request.runId)
+        XCTAssertEqual(decoded?.sourceChat, request.sourceChat)
+        XCTAssertEqual(decoded?.manualModelRole, request.manualModelRole)
     }
 
     private func sampleHandoff()

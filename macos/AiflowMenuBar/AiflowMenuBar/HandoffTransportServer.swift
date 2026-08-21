@@ -13,8 +13,11 @@ final class HandoffTransportServer: @unchecked Sendable {
     private let port: UInt16
     private let store: RunResultHandoffStore
     private let reviewStore: ChatGPTReviewStore
+    private let routingStore: CodexInitialRoutingStore
     private let token: String?
     private let onReviewPersisted: ((ChatGPTReview) -> Void)?
+    private let onRoutingResponse: ((CodexInitialRoutingRequest) -> Void)?
+    private let onRoutingAttention: ((CodexInitialRoutingRequest) -> Void)?
 
     private let queue =
         DispatchQueue(label: "aiflow.handoff.transport")
@@ -35,14 +38,20 @@ final class HandoffTransportServer: @unchecked Sendable {
         port: UInt16 = HandoffTransportServer.defaultPort,
         store: RunResultHandoffStore,
         reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
+        routingStore: CodexInitialRoutingStore = CodexInitialRoutingStore(),
         token: String? = HandoffToken.loadOrCreate(),
-        onReviewPersisted: ((ChatGPTReview) -> Void)? = nil
+        onReviewPersisted: ((ChatGPTReview) -> Void)? = nil,
+        onRoutingResponse: ((CodexInitialRoutingRequest) -> Void)? = nil,
+        onRoutingAttention: ((CodexInitialRoutingRequest) -> Void)? = nil
     ) {
         self.port = port
         self.store = store
         self.reviewStore = reviewStore
+        self.routingStore = routingStore
         self.token = token
         self.onReviewPersisted = onReviewPersisted
+        self.onRoutingResponse = onRoutingResponse
+        self.onRoutingAttention = onRoutingAttention
     }
 
     var boundPort: UInt16 {
@@ -441,6 +450,60 @@ final class HandoffTransportServer: @unchecked Sendable {
 
         case .review:
             captureReview(command, on: connection)
+        case .nextRouting:
+            sendNextRouting(to: connection)
+        case .routingDelivered:
+            acknowledgeRoutingDelivery(command, on: connection)
+        case .routingResponse:
+            captureRoutingResponse(command, on: connection)
+        case .routingFailed:
+            markRoutingAttention(command, on: connection)
+        }
+    }
+
+    private func sendNextRouting(to connection: Connection) {
+        do {
+            guard let request = try routingStore.pendingRequest() else {
+                send(.routingEmpty(), to: connection)
+                return
+            }
+            try routingStore.markDelivering(runId: request.runId)
+            guard let delivered = try routingStore.record(runId: request.runId) else {
+                throw CodexInitialRoutingStoreError.recordNotFound
+            }
+            send(.routing(delivered), to: connection)
+        } catch {
+            send(.error("routing_store_error"), to: connection)
+        }
+    }
+    private func acknowledgeRoutingDelivery(_ command: HandoffClientCommand, on connection: Connection) {
+        guard let runId = command.runId else { send(.error("missing_run_id"), to: connection); return }
+        guard UUID(uuidString: runId) != nil else { send(.error("invalid_run_id", runId: runId), to: connection); return }
+        do { try routingStore.markDelivered(runId: runId); send(.routingDeliveredAck(runId: runId), to: connection) }
+        catch { send(.error("routing_delivery_conflict", runId: runId), to: connection) }
+    }
+    private func captureRoutingResponse(_ command: HandoffClientCommand, on connection: Connection) {
+        guard let runId = command.runId, let conversationId = command.conversationId, let text = command.assistantMessage else { send(.error("invalid_routing", runId: command.runId), to: connection); return }
+        guard UUID(uuidString: runId) != nil else { send(.error("invalid_run_id", runId: runId), to: connection); return }
+        do { let request = try routingStore.captureResponse(runId: runId, conversationId: conversationId, assistantMessage: text); onRoutingResponse?(request); send(.routingResponseAck(runId: runId), to: connection) }
+        catch CodexInitialRoutingStoreError.invalidRecord { send(.error("invalid_routing", runId: runId), to: connection) }
+        catch { send(.error("routing_conflict", runId: runId), to: connection) }
+    }
+    private func markRoutingAttention(_ command: HandoffClientCommand, on connection: Connection) {
+        guard let runId = command.runId, UUID(uuidString: runId) != nil else {
+            send(.error("invalid_run_id", runId: command.runId), to: connection)
+            return
+        }
+        do {
+            try routingStore.markManualAttention(
+                runId: runId,
+                reason: "ChatGPT routing delivery did not complete safely.",
+                manualFallbackAvailable: true
+            )
+            if let request = try routingStore.record(runId: runId) { onRoutingAttention?(request) }
+            send(.routingResponseAck(runId: runId), to: connection)
+        } catch {
+            send(.error("routing_conflict", runId: runId), to: connection)
         }
     }
 

@@ -6,11 +6,24 @@ chrome.runtime.onMessage.addListener(
       return;
     }
 
-    if (message?.type !== "aiflow-deliver-handoff") {
+    if (message?.type === "aiflow-observe-routing") {
+      observeRouting(message);
+      sendResponse({ ok: true });
       return;
     }
 
-    deliver(message)
+    if (message?.type === "aiflow-cancel-routing-observation") {
+      cancelRoutingObservation(message.runId);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type !== "aiflow-deliver-handoff" &&
+        message?.type !== "aiflow-deliver-routing") {
+      return;
+    }
+
+    deliver({ ...message, routing: message.type === "aiflow-deliver-routing" })
       .then(sendResponse)
       .catch(error => {
         sendResponse({
@@ -27,6 +40,62 @@ chrome.runtime.onMessage.addListener(
 );
 
 const reviewObservers = new Map();
+const routingObservers = new Map();
+
+function observeRouting(message) {
+  armRoutingObservation(message);
+}
+
+function armRoutingObservation(message, options = {}) {
+  if (routingObservers.has(message.runId) ||
+      conversationIdFromLocation() !== message.conversationId) return false;
+  let active = options.active !== false;
+  const deadline = Date.now() + 180000;
+  let previousText = "";
+  let stableSince = 0;
+  const timer = setInterval(() => {
+    if (Date.now() > deadline || conversationIdFromLocation() !== message.conversationId) {
+      clearInterval(timer);
+      routingObservers.delete(message.runId);
+      if (Date.now() > deadline) {
+        chrome.runtime.sendMessage({ type: "aiflow-routing-observation-failed", runId: message.runId });
+      }
+      return;
+    }
+    if (!active) return;
+    const assistant = assistantResponseAfterSentinel(message.sentinel);
+    const text = normalizeText(assistant?.innerText || assistant?.textContent || "");
+    if (!assistant || !text || conversationIsBusy()) {
+      previousText = "";
+      stableSince = 0;
+      return;
+    }
+    if (text !== previousText) {
+      previousText = text;
+      stableSince = Date.now();
+      return;
+    }
+    if (stableSince && Date.now() - stableSince >= 1500) {
+      clearInterval(timer);
+      routingObservers.delete(message.runId);
+      chrome.runtime.sendMessage({
+        type: "aiflow-routing-captured",
+        runId: message.runId,
+        conversationId: message.conversationId,
+        assistantMessage: text
+      });
+    }
+  }, 250);
+  routingObservers.set(message.runId, { timer, activate() { active = true; } });
+  return true;
+}
+
+function activateRoutingObservation(runId) { routingObservers.get(runId)?.activate(); }
+function cancelRoutingObservation(runId) {
+  const observer = routingObservers.get(runId);
+  if (observer) clearInterval(observer.timer);
+  routingObservers.delete(runId);
+}
 
 function observeReview(message) {
   armReviewObservation(message);
@@ -153,8 +222,8 @@ async function deliver(message) {
     };
   }
 
-  const sentinel =
-    `[Aiflow result ${message.runId}]`;
+  const sentinel = message.sentinel || `[Aiflow result ${message.runId}]`;
+  const routing = message.routing === true;
 
   /*
    * The ChatGPT message may already have been submitted even if Aiflow
@@ -257,7 +326,7 @@ async function deliver(message) {
    */
   try {
     await chrome.storage.local.set({
-      blockedRunId:
+      [routing ? "blockedRoutingRunId" : "blockedRunId"]:
         message.runId,
       blockedReason:
         "send_outcome_unconfirmed"
@@ -278,7 +347,14 @@ async function deliver(message) {
    * Send. Capture the prior assistant baseline before clicking, but keep the
    * observer inert until the exact sentinel user message is confirmed.
    */
-  const reviewArmed = armReviewObservation(
+  const reviewArmed = routing ? armRoutingObservation(
+    {
+      runId: message.runId,
+      conversationId: message.conversationId,
+      sentinel
+    },
+    { active: false }
+  ) : armReviewObservation(
     {
       runId: message.runId,
       conversationId: message.conversationId,
@@ -299,7 +375,7 @@ async function deliver(message) {
 
   if (!confirmed) {
     if (reviewArmed) {
-      cancelReviewObservation(message.runId);
+      routing ? cancelRoutingObservation(message.runId) : cancelReviewObservation(message.runId);
     }
 
     return {
@@ -317,23 +393,23 @@ async function deliver(message) {
 
     const stored =
       await chrome.storage.local.get(
-        "blockedRunId"
+        routing ? "blockedRoutingRunId" : "blockedRunId"
       );
 
     if (
-      stored.blockedRunId ===
+      stored[routing ? "blockedRoutingRunId" : "blockedRunId"] ===
         message.runId
     ) {
       await chrome.storage.local.remove([
-        "blockedRunId",
+        routing ? "blockedRoutingRunId" : "blockedRunId",
         "blockedReason"
       ]);
     }
 
-    activateReviewObservation(message.runId);
+    routing ? activateRoutingObservation(message.runId) : activateReviewObservation(message.runId);
   } catch {
     if (reviewArmed) {
-      cancelReviewObservation(message.runId);
+      routing ? cancelRoutingObservation(message.runId) : cancelReviewObservation(message.runId);
     }
 
     /*

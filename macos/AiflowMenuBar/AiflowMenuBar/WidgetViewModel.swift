@@ -42,6 +42,9 @@ final class WidgetViewModel: ObservableObject {
     @Published private(set) var attentionPreferences: AiflowAttentionPreferences
     @Published private(set) var approvalHandling: ApprovalHandling
     @Published private(set) var followUpRoutingMode: FollowUpRoutingMode
+    @Published private(set) var initialRoutingMode: InitialRoutingMode
+    @Published private(set) var initialRoutingAttention: CodexInitialRoutingRequest?
+    @Published private(set) var initialRoutingAutomationBlocked = false
 
     @Published var selectedModelRole: String {
         didSet { defaults.set(selectedModelRole, forKey: Self.modelKey) }
@@ -61,6 +64,7 @@ final class WidgetViewModel: ObservableObject {
     private let handoffStore: RunResultHandoffStore
     private let reviewStore: ChatGPTReviewStore
     private let reviewDispatchStore: ChatGPTReviewDispatchStore
+    private let initialRoutingStore: CodexInitialRoutingStore
     private let now: () -> Date
     private let reviewFollowupSender: ((BridgeEvent) -> Bool)?
     private let approvalResponseSender: ((ApprovalRequest, Bool) -> Void)?
@@ -71,6 +75,8 @@ final class WidgetViewModel: ObservableObject {
     private var isPopoverVisible = false
     private var notificationsAvailable = true
     private var activeHandoffContext: ActiveRunHandoffContext?
+    private var activeInitialRoutingRunId: String?
+    private var routedRunOverride: (runId: String, sourceChat: RunResultHandoff.ChatTarget, modelRole: String, modelId: String, effort: String, prompt: String)?
 
     /// Which execution backend served the current run. Explicit and observable — never an
     /// ambiguous mix, and never two workers for one run.
@@ -119,6 +125,7 @@ final class WidgetViewModel: ObservableObject {
     private static let effortKey = "aiflow.effort"
     private static let approvalHandlingKey = "aiflow.approval-handling"
     private static let followUpRoutingModeKey = "aiflow.follow-up-routing"
+    private static let initialRoutingModeKey = "aiflow.initial-routing"
 
     init(
         cli: AiflowCLI = .shared,
@@ -134,6 +141,7 @@ final class WidgetViewModel: ObservableObject {
         handoffStore: RunResultHandoffStore = RunResultHandoffStore(),
         reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
         reviewDispatchStore: ChatGPTReviewDispatchStore = ChatGPTReviewDispatchStore(),
+        initialRoutingStore: CodexInitialRoutingStore = CodexInitialRoutingStore(),
         now: @escaping () -> Date = Date.init,
         reviewFollowupSender: ((BridgeEvent) -> Bool)? = nil,
         approvalResponseSender: ((ApprovalRequest, Bool) -> Void)? = nil
@@ -155,12 +163,14 @@ final class WidgetViewModel: ObservableObject {
         self.handoffStore = handoffStore
         self.reviewStore = reviewStore
         self.reviewDispatchStore = reviewDispatchStore
+        self.initialRoutingStore = initialRoutingStore
         self.now = now
         self.reviewFollowupSender = reviewFollowupSender
         self.approvalResponseSender = approvalResponseSender
         self.approvalHandling = ApprovalHandling(
             rawValue: defaults.string(forKey: Self.approvalHandlingKey) ?? ""
         ) ?? .manual
+        self.initialRoutingMode = InitialRoutingMode(rawValue: defaults.string(forKey: Self.initialRoutingModeKey) ?? "") ?? .manual
         self.followUpRoutingMode = FollowUpRoutingMode(
             rawValue: defaults.string(forKey: Self.followUpRoutingModeKey) ?? ""
         ) ?? .manual
@@ -238,7 +248,7 @@ final class WidgetViewModel: ObservableObject {
     var menuBarSymbolName: String {
         switch runState {
         case .ready, .confirming: return "bolt.horizontal.circle"
-        case .launching, .running, .respondingToRequest, .cancelling:
+        case .routing, .launching, .running, .respondingToRequest, .cancelling:
             return "bolt.horizontal.circle.fill"
         case .waitingForApproval, .waitingForInput: return "exclamationmark.circle.fill"
         case .completed: return "checkmark.circle.fill"
@@ -322,6 +332,8 @@ final class WidgetViewModel: ObservableObject {
         followUpRoutingMode = mode
         defaults.set(mode.rawValue, forKey: Self.followUpRoutingModeKey)
     }
+
+    func setInitialRoutingMode(_ mode: InitialRoutingMode) { initialRoutingMode = mode; defaults.set(mode.rawValue, forKey: Self.initialRoutingModeKey) }
 
     private func updateAttentionPreferences(_ preferences: AiflowAttentionPreferences) {
         attention.updatePreferences(preferences)
@@ -464,24 +476,52 @@ final class WidgetViewModel: ObservableObject {
     /// Starts Codex after the user confirmed. Only reachable from `.confirming`.
     func confirmRun() {
         guard case .confirming(let project) = runState else { return }
-        guard let modelId = resolvedModelId, hasPrompt else { return }
+        guard hasPrompt || routedRunOverride != nil else { return }
+        let routed = routedRunOverride
+        guard let modelId = routed?.modelId ?? resolvedModelId else { return }
 
-        let prompt = effectivePrompt
+        let prompt = routed?.prompt ?? effectivePrompt
         let forbiddenFollowUpRunId = manualRecoveryDraft?.forbiddenFollowUpRunId
+        let manualRecovery = manualRecoveryDraft != nil
         manualRecoveryDraft = nil
-        let effort = selectedEffort
+        let effort = routed?.effort ?? selectedEffort
+        let modelRole = routed?.modelRole ?? selectedModelRole
+        if initialRoutingMode == .chatGPT && routed == nil && !manualRecovery {
+            guard !initialRoutingAutomationBlocked else {
+                runState = .ready
+                notice = "Initial routing evidence needs attention before automatic routing can continue."
+                return
+            }
+            guard let target = mappedInitialRoutingTarget(for: project) else {
+                runState = .ready
+                notice = "ChatGPT initial routing requires this project's mapped Return Chat."
+                return
+            }
+            let request = CodexInitialRoutingRequest(schemaVersion: 1, runId: UUID().uuidString, project: .init(id: project.id, name: project.name, path: project.path), sourceChat: target, prompt: prompt, manualModelRole: modelRole, manualModelId: modelId, manualEffort: effort, assistantMessage: nil, state: .pending, createdAt: now(), updatedAt: now(), terminalReason: nil)
+            do {
+                try initialRoutingStore.persist(request)
+                activeInitialRoutingRunId = request.runId
+                runningProject = project
+                runState = .routing(project)
+                lastMessage = "Selecting model and reasoning in ChatGPT..."
+            } catch {
+                runState = .failed(project: project, message: "Could not save initial routing request")
+            }
+            return
+        }
+        routedRunOverride = nil
         lastMessage = ""
         runningProject = project
         runState = .launching(project)
 
-        var runId = UUID().uuidString
+        var runId = routed?.runId ?? UUID().uuidString
         while runId == forbiddenFollowUpRunId { runId = UUID().uuidString }
         activeRunId = runId
         activeHandoffContext = ActiveRunHandoffContext(
             runId: runId,
             project: project,
-            sourceChat: sourceChatTargetForRun(project),
-            modelRole: selectedModelRole,
+            sourceChat: routed?.sourceChat ?? sourceChatTargetForRun(project),
+            modelRole: modelRole,
             modelId: modelId,
             effort: effort,
             startedAt: now()
@@ -496,10 +536,10 @@ final class WidgetViewModel: ObservableObject {
             bridge.sendToWorker(
                 .executeRun(
                     runId: runId, project: project, prompt: prompt,
-                    model: selectedModelRole, effort: effort))
+                    model: modelRole, effort: effort))
         {
             activeWorker = .officialVSCode
-            emitRunStarted(project: project, effort: effort, prompt: prompt)
+            emitRunStarted(project: project, modelRole: modelRole, effort: effort, prompt: prompt)
             return
         }
 
@@ -516,7 +556,7 @@ final class WidgetViewModel: ObservableObject {
         let client = CodexAppServerClient()
         self.client = client
 
-        emitRunStarted(project: project, effort: effort, prompt: prompt)
+        emitRunStarted(project: project, modelRole: modelRole, effort: effort, prompt: prompt)
 
         Task {
             guard attentionPreferences.systemNotificationsEnabled else { return }
@@ -549,6 +589,93 @@ final class WidgetViewModel: ObservableObject {
 
     private var effectivePrompt: String {
         manualRecoveryDraft?.prompt ?? clipboardPrompt
+    }
+
+    private func mappedInitialRoutingTarget(for project: SavedProject) -> RunResultHandoff.ChatTarget? {
+        guard let raw = map.chatURL(forProjectPath: project.path), let url = ChatURL.normalize(raw) else { return nil }
+        return .init(url: url, conversationId: ChatURL.conversationID(from: url))
+    }
+
+    private func handleRoutingResponse(_ request: CodexInitialRoutingRequest) {
+        guard request.runId == activeInitialRoutingRunId, case .routing(let project) = runState,
+              project.id == request.project.id, let text = request.assistantMessage else { return }
+        do {
+            let selection = try CodexInitialRoutingParser.parse(text)
+            guard let config, let model = config.model(forRole: selection.modelRole),
+                  config.reasoningEfforts.contains(selection.effort) else { throw CodexInitialRoutingParserError.invalidContract }
+            let frozen = try initialRoutingStore.beginExecution(runId: request.runId)
+            activeInitialRoutingRunId = nil
+            routedRunOverride = (frozen.runId, frozen.sourceChat, model.role, model.modelId, selection.effort, frozen.prompt)
+            runState = .confirming(project)
+            confirmRun()
+        } catch {
+            try? initialRoutingStore.markManualAttention(
+                runId: request.runId,
+                reason: "ChatGPT routing response was invalid or unsupported.",
+                manualFallbackAvailable: true
+            )
+            initialRoutingAttention = try? initialRoutingStore.record(runId: request.runId)
+            activeInitialRoutingRunId = nil
+            runningProject = nil
+            runState = .failed(project: project, message: "Initial routing needs manual attention")
+        }
+    }
+
+    private func handleRoutingAttention(_ request: CodexInitialRoutingRequest) {
+        initialRoutingAttention = request
+        attention.deliver(.routingNeedsAttention(
+            runId: request.runId,
+            projectName: request.project.name,
+            category: request.manualFallbackAvailable == true ? "manual_fallback" : "execution_ambiguous"
+        ))
+        guard request.runId == activeInitialRoutingRunId,
+              case .routing(let project) = runState,
+              project.id == request.project.id
+        else { return }
+        activeInitialRoutingRunId = nil
+        runningProject = nil
+        runState = .failed(project: project, message: "Initial routing needs manual attention")
+    }
+
+    private func markInitialRoutingStartedIfNeeded() {
+        guard let runId = activeRunId else { return }
+        do {
+            guard let request = try initialRoutingStore.record(runId: runId), request.state == .starting else { return }
+            try initialRoutingStore.markStarted(runId: runId)
+        } catch {
+            try? initialRoutingStore.markManualAttention(
+                runId: runId,
+                reason: "Aiflow could not durably confirm initial routing execution start.",
+                manualFallbackAvailable: false
+            )
+            if let request = try? initialRoutingStore.record(runId: runId) {
+                handleRoutingAttention(request)
+            }
+        }
+    }
+
+    func useManualInitialRoutingSelection() {
+        guard let request = initialRoutingAttention, request.state == .manualAttention,
+              request.manualFallbackAvailable == true,
+              let project = store.project(withPath: request.project.path),
+              project.id == request.project.id, project.name == request.project.name, project.exists,
+              let config, let model = config.model(forRole: request.manualModelRole),
+              model.modelId == request.manualModelId, config.reasoningEfforts.contains(request.manualEffort)
+        else { return }
+        do {
+            let frozen = try initialRoutingStore.beginManualFallback(runId: request.runId)
+            initialRoutingAttention = nil
+            activeInitialRoutingRunId = nil
+            routedRunOverride = (
+                frozen.runId, frozen.sourceChat, model.role, model.modelId,
+                frozen.manualEffort, frozen.prompt
+            )
+            runningProject = project
+            runState = .confirming(project)
+            confirmRun()
+        } catch {
+            notice = "Aiflow could not prepare the manual routing fallback."
+        }
     }
 
     /// Starts a new normal run only after the user confirms it in the existing confirmation
@@ -643,6 +770,7 @@ final class WidgetViewModel: ObservableObject {
 
         switch event {
         case .started:
+            markInitialRoutingStartedIfNeeded()
             runState = .running(project)
             emit(.runStatus(runState.bridgeName))
 
@@ -829,6 +957,13 @@ final class WidgetViewModel: ObservableObject {
     /// alive here: the run is only `.cancelled` once the client reports the turn actually
     /// ended (`turn/completed` with `interrupted`, or the client's bounded fallback).
     func cancelRun() {
+        if case .routing(let project) = runState, let runId = activeInitialRoutingRunId {
+            try? initialRoutingStore.markCancelled(runId: runId)
+            activeInitialRoutingRunId = nil
+            runningProject = nil
+            runState = .cancelled(project)
+            return
+        }
         guard let project = runningProject, runState.isBusy else { return }
         if let request = pendingApproval { notifications.removePendingRequest(id: request.id) }
         if let question = pendingQuestion { notifications.removePendingRequest(id: question.id) }
@@ -898,11 +1033,36 @@ final class WidgetViewModel: ObservableObject {
     func startHandoffTransportIfNeeded() {
         guard handoffTransportServer == nil else { return }
 
+        // A response or execution intent without a live app-lifetime owner is ambiguous.
+        // Preserve it as evidence, but never replay it automatically after restart.
+        do {
+            let attention = try initialRoutingStore.reconcileAfterRestart()
+            initialRoutingAttention = attention.first
+            for request in attention {
+                self.attention.deliver(.routingNeedsAttention(
+                    runId: request.runId,
+                    projectName: request.project.name,
+                    category: request.manualFallbackAvailable == true ? "manual_fallback" : "execution_ambiguous"
+                ))
+            }
+        } catch {
+            initialRoutingAutomationBlocked = true
+            self.attention.deliver(.routingNeedsAttention(runId: "routing-store", projectName: "Aiflow", category: "integrity"))
+            notice = "Initial routing evidence is unreadable; automatic routing is blocked."
+        }
+
         let server = HandoffTransportServer(
             store: handoffStore,
             reviewStore: reviewStore,
+            routingStore: initialRoutingStore,
             onReviewPersisted: { [weak self] review in
                 Task { @MainActor in self?.handlePersistedReview(review) }
+            },
+            onRoutingResponse: { [weak self] request in
+                Task { @MainActor in self?.handleRoutingResponse(request) }
+            },
+            onRoutingAttention: { [weak self] request in
+                Task { @MainActor in self?.handleRoutingAttention(request) }
             }
         )
 
@@ -926,6 +1086,7 @@ final class WidgetViewModel: ObservableObject {
 
         switch command.type {
         case .workerAccepted:
+            markInitialRoutingStartedIfNeeded()
             runState = .running(project)
             if let runId = activeRunId {
                 do {
@@ -1515,10 +1676,10 @@ final class WidgetViewModel: ObservableObject {
         if available { resumePendingReviewDispatches() }
     }
 
-    private func emitRunStarted(project: SavedProject, effort: String, prompt: String) {
+    private func emitRunStarted(project: SavedProject, modelRole: String, effort: String, prompt: String) {
         var started = BridgeEvent(type: .runStarted)
         started.project = project.name
-        started.model = selectedModelRole
+        started.model = modelRole
         started.effort = effort
         started.runState = runState.bridgeName
         started.runId = activeRunId

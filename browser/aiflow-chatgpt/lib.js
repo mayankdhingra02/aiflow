@@ -139,3 +139,9 @@ export function buildReviewCommand(review) {
     assistantMessage: review?.assistantMessage
   };
 }
+
+export function buildRoutingMessage(request) {
+  return `[Aiflow routing ${request.runId}]\n\nChoose settings for the next Codex turn only. Do not implement the task.\n\nProject: ${request.project.name}\nPrompt:\n${request.prompt}\n\nReply with exactly:\n# Codex Routing\n## Model\n<luna|terra|sol>\n## Reasoning\n<low|medium|high|xhigh>`;
+}
+export function routingMessageIsBounded(message) { const text = String(message ?? ""); return text.trim().length > 0 && new TextEncoder().encode(text).length <= 32 * 1024; }
+export function buildRoutingResponseCommand(response) { return { type: "routing_response", ...response }; }
