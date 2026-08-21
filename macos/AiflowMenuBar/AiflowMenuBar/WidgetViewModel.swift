@@ -8,7 +8,6 @@ private enum ChatGPTReviewAutomationError: Error {
 @MainActor
 final class WidgetViewModel: ObservableObject {
     private static let dismissedReviewWarningsKey = "aiflow.dismissed-review-warnings"
-    private static let deliveredReviewNotificationsKey = "aiflow.delivered-review-notifications"
     /// The app's single instance. Referenced by the scene and by the app delegate so the
     /// companion bridge can start at launch. Tests construct their own instances instead and
     /// never touch this, so no test binds the bridge port.
@@ -30,6 +29,7 @@ final class WidgetViewModel: ObservableObject {
     @Published private(set) var hasQueuedAutomaticReviewFollowUp = false
     @Published private(set) var reviewAutomationBlocked = false
     @Published private(set) var reviewAutomationBlockReason: String?
+    @Published private(set) var attentionPreferences: AiflowAttentionPreferences
 
     @Published var selectedModelRole: String {
         didSet { defaults.set(selectedModelRole, forKey: Self.modelKey) }
@@ -45,6 +45,7 @@ final class WidgetViewModel: ObservableObject {
     private let detectChat: () -> String?
     private let validateGit: (String) -> GitRepositoryValidator.Result
     private let notifications: NotificationManaging
+    private let attention: AttentionCoordinating
     private let handoffStore: RunResultHandoffStore
     private let reviewStore: ChatGPTReviewStore
     private let reviewDispatchStore: ChatGPTReviewDispatchStore
@@ -114,6 +115,7 @@ final class WidgetViewModel: ObservableObject {
             GitRepositoryValidator.validate(path: $0)
         },
         notifications: NotificationManaging? = nil,
+        attention: AttentionCoordinating? = nil,
         handoffStore: RunResultHandoffStore = RunResultHandoffStore(),
         reviewStore: ChatGPTReviewStore = ChatGPTReviewStore(),
         reviewDispatchStore: ChatGPTReviewDispatchStore = ChatGPTReviewDispatchStore(),
@@ -126,7 +128,14 @@ final class WidgetViewModel: ObservableObject {
         self.defaults = defaults
         self.detectChat = detectChat
         self.validateGit = validateGit
-        self.notifications = notifications ?? NotificationManager()
+        let resolvedNotifications = notifications ?? NotificationManager()
+        self.notifications = resolvedNotifications
+        let resolvedAttention = attention ?? AttentionCoordinator(
+            defaults: defaults,
+            notifications: resolvedNotifications
+        )
+        self.attention = resolvedAttention
+        self.attentionPreferences = resolvedAttention.preferences
         self.handoffStore = handoffStore
         self.reviewStore = reviewStore
         self.reviewDispatchStore = reviewDispatchStore
@@ -227,8 +236,51 @@ final class WidgetViewModel: ObservableObject {
         chatURL = detectChat()
     }
 
-    func popoverDidBecomeVisible() { isPopoverVisible = true }
-    func popoverDidBecomeHidden() { isPopoverVisible = false }
+    func popoverDidBecomeVisible() {
+        isPopoverVisible = true
+        attention.updateWidgetVisibility(true)
+    }
+
+    func popoverDidBecomeHidden() {
+        isPopoverVisible = false
+        attention.updateWidgetVisibility(false)
+    }
+
+    func attachAttentionPresenter(_ presenter: AttentionWidgetPresenting) {
+        attention.attachPresenter(presenter)
+    }
+
+    func setSystemNotificationsEnabled(_ enabled: Bool) {
+        var preferences = attentionPreferences
+        preferences.systemNotificationsEnabled = enabled
+        updateAttentionPreferences(preferences)
+        guard enabled else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            self.notificationsAvailable = await self.attention.requestNotificationPermissionIfNeeded()
+            if !self.notificationsAvailable {
+                self.notice = "macOS notifications are denied. Auto-show remains available."
+            }
+        }
+    }
+
+    func setAutoShowWidgetEnabled(_ enabled: Bool) {
+        var preferences = attentionPreferences
+        preferences.autoShowWidgetEnabled = enabled
+        updateAttentionPreferences(preferences)
+    }
+
+    func setAttentionMuted(_ muted: Bool) {
+        var preferences = attentionPreferences
+        preferences.muted = muted
+        updateAttentionPreferences(preferences)
+    }
+
+    private func updateAttentionPreferences(_ preferences: AiflowAttentionPreferences) {
+        attention.updatePreferences(preferences)
+        attentionPreferences = attention.preferences
+    }
 
     private func loadConfigIfNeeded() async {
         guard config == nil else { return }
@@ -421,9 +473,10 @@ final class WidgetViewModel: ObservableObject {
         emitRunStarted(project: project, effort: effort, prompt: prompt)
 
         Task {
-            notificationsAvailable = await notifications.prepareForRun()
+            guard attentionPreferences.systemNotificationsEnabled else { return }
+            notificationsAvailable = await attention.requestNotificationPermissionIfNeeded()
             if !notificationsAvailable {
-                notice = "Notifications are disabled. Aiflow will show attention requests in the menu bar."
+                notice = "macOS notifications are denied. Aiflow will still show attention requests in the widget."
             }
             do {
                 try await client.start(
@@ -553,14 +606,20 @@ final class WidgetViewModel: ObservableObject {
                     projectName: project.name, permissionProfile: permissionProfile)
             runState = .waitingForApproval(request)
             emit(.approvalRequested(request))
-            if !isPopoverVisible && notificationsAvailable { notifications.sendApproval(for: request) }
+            attention.deliver(.approvalRequired(
+                requestId: request.id.notificationValue,
+                projectName: project.name
+            ))
 
         case .inputRequested(let id, let questions):
             let request = UserQuestion(
                 id: id, questions: questions, projectName: project.name)
             runState = .waitingForInput(request)
             emit(.questionRequested(request))
-            if !isPopoverVisible && notificationsAvailable { notifications.sendQuestion(for: request) }
+            attention.deliver(.questionRequired(
+                requestId: request.id.notificationValue,
+                projectName: project.name
+            ))
 
         case .requestResolved(let id):
             // Only the exact request we are blocked on may unblock us; a stale resolution
@@ -586,7 +645,10 @@ final class WidgetViewModel: ObservableObject {
             completed.project = project.name
             completed.message = lastMessage
             emit(completed)
-            if !isPopoverVisible && notificationsAvailable { notifications.sendCompletion(for: project) }
+            attention.deliver(.codexCompleted(
+                runId: attentionRunID(for: project),
+                projectName: project.name
+            ))
             finishSession()
 
         case .cancelled:
@@ -621,7 +683,10 @@ final class WidgetViewModel: ObservableObject {
             failed.project = project.name
             failed.message = detail
             emit(failed)
-            if !isPopoverVisible && notificationsAvailable { notifications.sendFailure(for: project) }
+            attention.deliver(.codexFailed(
+                runId: attentionRunID(for: project),
+                projectName: project.name
+            ))
             finishSession()
         }
     }
@@ -819,6 +884,7 @@ final class WidgetViewModel: ObservableObject {
                 outcome: .completed,
                 finalMessage: command.message
             )
+            attention.deliver(.codexCompleted(runId: runId, projectName: project.name))
             finishWorkerRun()
 
         case .workerFailed:
@@ -833,11 +899,13 @@ final class WidgetViewModel: ObservableObject {
                 outcome: .failed,
                 errorMessage: detail
             )
+            attention.deliver(.codexFailed(runId: runId, projectName: project.name))
             finishWorkerRun()
 
         case .workerCancelled:
             runState = .cancelled(project)
             persistTerminalHandoff(outcome: .cancelled)
+            attention.deliver(.codexCancelled(runId: runId, projectName: project.name))
             finishWorkerRun()
 
         default:
@@ -948,6 +1016,10 @@ final class WidgetViewModel: ObservableObject {
                 terminalReason: nil
             )
             try reviewDispatchStore.prepare(dispatch)
+            attention.deliver(.reviewChangesRequested(
+                sourceRunId: review.runId,
+                projectName: handoff.project.name
+            ))
             refreshReviewLoopStatus()
         }
     }
@@ -1259,32 +1331,26 @@ final class WidgetViewModel: ObservableObject {
         _ dispatch: ChatGPTReviewDispatch,
         reason: String? = nil
     ) {
-        guard !isPopoverVisible, notificationsAvailable else { return }
-        let key = "\(dispatch.sourceRunId):\(dispatch.state.rawValue):\(reason ?? dispatch.terminalReason ?? "")"
-        guard markReviewNotificationDelivered(key) else { return }
-
         if dispatch.state == .stopped, dispatch.verdict == "SHIP" {
-            notifications.sendReviewShipped(projectName: dispatch.project.name)
+            attention.deliver(.reviewShipped(
+                sourceRunId: dispatch.sourceRunId,
+                projectName: dispatch.project.name
+            ))
         } else if dispatch.state == .manualAttention {
-            notifications.sendReviewNeedsAttention(
+            attention.deliver(.reviewManualAttention(
+                sourceRunId: dispatch.sourceRunId,
                 projectName: dispatch.project.name,
                 reason: reason ?? dispatch.terminalReason ?? "Review requires manual attention."
-            )
+            ))
         }
     }
 
     private func notifyReviewAutomationBlockedIfNeeded(_ reason: String) {
-        guard !isPopoverVisible, notificationsAvailable else { return }
-        guard markReviewNotificationDelivered("blocked:\(reason)") else { return }
-        notifications.sendReviewAutomationBlocked(reason: reason)
+        attention.deliver(.reviewAutomationBlocked(reason: reason))
     }
 
-    private func markReviewNotificationDelivered(_ key: String) -> Bool {
-        var delivered = defaults.stringArray(forKey: Self.deliveredReviewNotificationsKey) ?? []
-        guard !delivered.contains(key) else { return false }
-        delivered.append(key)
-        defaults.set(Array(delivered.suffix(128)), forKey: Self.deliveredReviewNotificationsKey)
-        return true
+    private func attentionRunID(for project: SavedProject) -> String {
+        activeRunId ?? activeHandoffContext?.runId ?? "\(project.path):\(now().timeIntervalSince1970)"
     }
 
     private func finishWorkerRun() {
@@ -1493,5 +1559,8 @@ extension WidgetViewModel {
 
     func setNotificationsAvailableForTesting(_ available: Bool) {
         notificationsAvailable = available
+        var preferences = attentionPreferences
+        preferences.systemNotificationsEnabled = available
+        updateAttentionPreferences(preferences)
     }
 }

@@ -51,6 +51,8 @@ struct MenuBarView: View {
                 statusSection
                 Divider()
                 reviewLoopSection
+                Divider()
+                alertsSection
 
             case .confirmingRun(let project):
                 runConfirmPanel(project)
@@ -357,6 +359,38 @@ struct MenuBarView: View {
         case .failed: return .red
         case .waitingForApproval, .waitingForInput: return .orange
         default: return .secondary
+        }
+    }
+
+    private var alertsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Alerts").font(.caption).foregroundStyle(.secondary)
+
+            if viewModel.attentionPreferences.muted {
+                HStack {
+                    Text("Muted").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Unmute") { viewModel.setAttentionMuted(false) }
+                        .buttonStyle(.borderless)
+                }
+            } else {
+                Toggle(
+                    "Notifications",
+                    isOn: Binding(
+                        get: { viewModel.attentionPreferences.systemNotificationsEnabled },
+                        set: { viewModel.setSystemNotificationsEnabled($0) }
+                    )
+                )
+                Toggle(
+                    "Auto-show",
+                    isOn: Binding(
+                        get: { viewModel.attentionPreferences.autoShowWidgetEnabled },
+                        set: { viewModel.setAutoShowWidgetEnabled($0) }
+                    )
+                )
+                Button("Mute") { viewModel.setAttentionMuted(true) }
+                    .buttonStyle(.borderless)
+            }
         }
     }
 
