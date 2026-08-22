@@ -117,6 +117,11 @@ final class HandoffTransportProtocolTests: XCTestCase {
         )
     }
 
+    func testBlockedCommandRoundTrips() throws {
+        let command = HandoffClientCommand.blocked(runId: UUID().uuidString)
+        XCTAssertEqual(HandoffTransportCodec.decodeClientCommand(try XCTUnwrap(HandoffTransportCodec.encodeClientCommand(command))), command)
+    }
+
     func testReviewCommandAndAcknowledgementRoundTrip() throws {
         let command = HandoffClientCommand.review(runId: UUID().uuidString, conversationId: "chat-one", assistantMessage: "Review complete.")
         let data = try XCTUnwrap(HandoffTransportCodec.encodeClientCommand(command))

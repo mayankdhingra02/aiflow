@@ -68,6 +68,7 @@ final class WidgetViewModel: ObservableObject {
     private let now: () -> Date
     private let reviewFollowupSender: ((BridgeEvent) -> Bool)?
     private let approvalResponseSender: ((ApprovalRequest, Bool) -> Void)?
+    private let clipboardString: () -> String?
     private var dismissedReviewWarningIDs: Set<String> = []
     private var manualRecoveryDraft: ManualRecoveryDraft?
 
@@ -131,7 +132,7 @@ final class WidgetViewModel: ObservableObject {
         cli: AiflowCLI = .shared,
         store: SavedProjectStore = SavedProjectStore(),
         map: ChatProjectMap = ChatProjectMap(),
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AiflowStorageRoot.defaultUserDefaults(),
         detectChat: @escaping () -> String? = { BrowserURLDetector.detectChatURL() },
         validateGit: @escaping (String) -> GitRepositoryValidator.Result = {
             GitRepositoryValidator.validate(path: $0)
@@ -144,7 +145,8 @@ final class WidgetViewModel: ObservableObject {
         initialRoutingStore: CodexInitialRoutingStore = CodexInitialRoutingStore(),
         now: @escaping () -> Date = Date.init,
         reviewFollowupSender: ((BridgeEvent) -> Bool)? = nil,
-        approvalResponseSender: ((ApprovalRequest, Bool) -> Void)? = nil
+        approvalResponseSender: ((ApprovalRequest, Bool) -> Void)? = nil,
+        clipboardString: @escaping () -> String? = { NSPasteboard.general.string(forType: .string) }
     ) {
         self.cli = cli
         self.store = store
@@ -167,6 +169,7 @@ final class WidgetViewModel: ObservableObject {
         self.now = now
         self.reviewFollowupSender = reviewFollowupSender
         self.approvalResponseSender = approvalResponseSender
+        self.clipboardString = clipboardString
         self.approvalHandling = ApprovalHandling(
             rawValue: defaults.string(forKey: Self.approvalHandlingKey) ?? ""
         ) ?? .manual
@@ -274,7 +277,7 @@ final class WidgetViewModel: ObservableObject {
     func refreshClipboard() {
         // Read-only: the widget never writes to the clipboard.
         clipboardPrompt =
-            (NSPasteboard.general.string(forType: .string) ?? "")
+            (clipboardString() ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -1164,6 +1167,12 @@ final class WidgetViewModel: ObservableObject {
             _ = try reviewDispatchStore.allRecords()
             try prepareDispatchForPersistedReview(review)
             resumePendingReviewDispatches()
+        } catch ChatGPTReviewAutomationError.evidenceMismatch(let reason) {
+            // A review was durably captured, but this one immutable review/handoff relationship
+            // cannot safely enter automation. Keep unrelated reviews eligible; structural store
+            // failures still take the global fail-closed path below.
+            reportReviewEvidenceMismatch(review, reason: reason)
+            resumePendingReviewDispatches()
         } catch {
             stopAutomaticReviewDispatch("Aiflow review evidence needs manual attention.")
         }
@@ -1178,7 +1187,13 @@ final class WidgetViewModel: ObservableObject {
             try reviewDispatchStore.markAmbiguousDispatchesForManualAttention()
             var knownSourceRunIds = Set(try reviewDispatchStore.allRecords().map(\.sourceRunId))
             for review in reviews where !knownSourceRunIds.contains(review.runId) {
-                try prepareDispatchForPersistedReview(review)
+                // A source-specific immutable mismatch is terminal for that one review, not
+                // evidence that unrelated review/dispatch records are structurally corrupt.
+                do {
+                    try prepareDispatchForPersistedReview(review)
+                } catch ChatGPTReviewAutomationError.evidenceMismatch(let reason) {
+                    reportReviewEvidenceMismatch(review, reason: reason)
+                }
                 knownSourceRunIds.insert(review.runId)
             }
             resumePendingReviewDispatches()
@@ -1187,13 +1202,30 @@ final class WidgetViewModel: ObservableObject {
         }
     }
 
+    /// A persisted review with no safely validated source handoff has no trusted project context
+    /// from which to construct a dispatch record. It remains durable in the review store and is
+    /// surfaced as exact-run manual attention without blocking independent review recovery.
+    private func reportReviewEvidenceMismatch(_ review: ChatGPTReview, reason: String) {
+        attention.deliver(.reviewManualAttention(
+            sourceRunId: review.runId,
+            projectName: "Unknown project",
+            reason: reason
+        ))
+    }
+
     private func prepareDispatchForPersistedReview(_ review: ChatGPTReview) throws {
         guard try reviewDispatchStore.record(sourceRunId: review.runId) == nil else { return }
-        guard let handoff = try handoffStore.validatedDeliveredHandoff(runId: review.runId),
-              handoff.sourceChat.conversationId == review.conversationId else {
+        guard let handoff = try handoffStore.validatedDeliveredHandoff(runId: review.runId) else {
             throw ChatGPTReviewAutomationError.evidenceMismatch(
-                "review does not match its delivered handoff"
+                "review does not have a valid delivered handoff"
             )
+        }
+        guard handoff.sourceChat.conversationId == review.conversationId else {
+            try persistReviewDispatch(
+                review: review, handoff: handoff, verdict: "INVALID", instruction: nil,
+                state: .manualAttention, reason: "review does not match its delivered handoff"
+            )
+            return
         }
 
         let parsed: ParsedChatGPTReview
@@ -1338,30 +1370,32 @@ final class WidgetViewModel: ObservableObject {
         guard !reviewAutomationBlocked, !runState.isBusy, officialWorkerAvailable else { return }
         guard reviewFollowupSender != nil || bridge?.hasDesignatedWorker == true else { return }
 
-        let dispatch: ChatGPTReviewDispatch
-        do {
-            guard let pending = try reviewDispatchStore.pendingRecords().first else { return }
-            dispatch = pending
-        } catch {
-            stopAutomaticReviewDispatch("Aiflow dispatch state is unreadable.")
-            return
-        }
+        while true {
+            let dispatch: ChatGPTReviewDispatch
+            do {
+                guard let pending = try reviewDispatchStore.pendingRecords().first else { return }
+                dispatch = pending
+            } catch {
+                stopAutomaticReviewDispatch("Aiflow dispatch state is unreadable.")
+                return
+            }
 
-        let evidence: (
-            followUpRunId: String, instruction: String, project: SavedProject,
-            modelRole: String, modelId: String, effort: String
-        )
-        do {
-            evidence = try validatedExecutionEvidence(for: dispatch)
-        } catch ChatGPTReviewAutomationError.evidenceMismatch(let reason) {
-            moveToManualAttention(dispatch, reason: reason)
-            return
-        } catch {
-            stopAutomaticReviewDispatch("Aiflow immutable review evidence is unreadable.")
-            return
-        }
+            let evidence: (
+                followUpRunId: String, instruction: String, project: SavedProject,
+                modelRole: String, modelId: String, effort: String
+            )
+            do {
+                evidence = try validatedExecutionEvidence(for: dispatch)
+            } catch ChatGPTReviewAutomationError.evidenceMismatch(let reason) {
+                moveToManualAttention(dispatch, reason: reason)
+                // A stale pending record must not starve a later independent review.
+                continue
+            } catch {
+                stopAutomaticReviewDispatch("Aiflow immutable review evidence is unreadable.")
+                return
+            }
 
-        let prompt = """
+            let prompt = """
         Follow-up review pass for Aiflow run \(evidence.followUpRunId).
         Preserve the correct existing work and address only the findings below. Do not broaden scope, reset, discard, commit, push, merge, rewrite history, expose secrets, weaken tests, or request danger-full-access. Validate the requested change, do not claim tests you did not run, and stop/report any unsafe conflict.
 
@@ -1370,24 +1404,24 @@ final class WidgetViewModel: ObservableObject {
 
         Finish with changed files, findings addressed, tests run, unresolved risks, and git status.
         """
-        guard prompt.lengthOfBytes(using: .utf8) <= 32 * 1024 else {
-            moveToManualAttention(dispatch, reason: "bounded follow-up envelope exceeded")
-            return
-        }
+            guard prompt.lengthOfBytes(using: .utf8) <= 32 * 1024 else {
+                moveToManualAttention(dispatch, reason: "bounded follow-up envelope exceeded")
+                continue
+            }
 
-        do {
+            do {
             try reviewDispatchStore.update(sourceRunId: dispatch.sourceRunId, state: .dispatching)
             guard try reviewDispatchStore.record(sourceRunId: dispatch.sourceRunId)?.state
                 == .dispatching else {
                 throw ChatGPTReviewDispatchStoreError.writeVerificationFailed
             }
             refreshReviewLoopStatus()
-        } catch {
-            stopAutomaticReviewDispatch("Aiflow could not persist follow-up dispatch intent.")
-            return
-        }
+            } catch {
+                stopAutomaticReviewDispatch("Aiflow could not persist follow-up dispatch intent.")
+                return
+            }
 
-        runningProject = evidence.project
+            runningProject = evidence.project
         runState = .launching(evidence.project)
         activeWorker = .officialVSCode
         activeRunId = evidence.followUpRunId
@@ -1398,16 +1432,18 @@ final class WidgetViewModel: ObservableObject {
             startedAt: now(), codexConversationId: dispatch.codexConversationId, codexTurnId: nil
         )
 
-        let event = BridgeEvent.executeFollowup(
+            let event = BridgeEvent.executeFollowup(
             runId: evidence.followUpRunId, parentRunId: dispatch.sourceRunId,
             project: evidence.project,
             conversationId: dispatch.codexConversationId, prompt: prompt,
             model: evidence.modelRole, effort: evidence.effort
         )
-        let sent = reviewFollowupSender?(event) ?? bridge?.sendToWorker(event) ?? false
-        if !sent {
-            moveToManualAttention(dispatch, reason: "follow-up dispatch outcome was ambiguous")
-            clearActiveRunContextAfterTerminalRelease()
+            let sent = reviewFollowupSender?(event) ?? bridge?.sendToWorker(event) ?? false
+            if !sent {
+                moveToManualAttention(dispatch, reason: "follow-up dispatch outcome was ambiguous")
+                clearActiveRunContextAfterTerminalRelease()
+            }
+            return
         }
     }
 
@@ -1417,46 +1453,127 @@ final class WidgetViewModel: ObservableObject {
         followUpRunId: String, instruction: String, project: SavedProject,
         modelRole: String, modelId: String, effort: String
     ) {
-        guard let review = try reviewStore.validatedReview(runId: dispatch.sourceRunId),
-              let handoff = try handoffStore.validatedDeliveredHandoff(
-                runId: dispatch.sourceRunId
-              ),
-              review.runId == dispatch.sourceRunId,
-              review.conversationId == dispatch.conversationId,
-              handoff.runId == dispatch.sourceRunId,
-              handoff.sourceChat.conversationId == review.conversationId,
-              review.assistantMessage == dispatch.assistantMessage,
-              review.capturedAt == dispatch.reviewCapturedAt,
-              handoff.execution.worker == RunWorker.officialVSCode.rawValue,
-              handoff.project == dispatch.project,
-              let project = store.project(withPath: handoff.project.path),
-              project.id == handoff.project.id,
-              project.name == handoff.project.name,
-              let handoffConversationId = handoff.execution.codexConversationId,
-              !handoffConversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              handoffConversationId == dispatch.codexConversationId,
-              handoff.execution.modelRole == dispatch.modelRole,
-              handoff.execution.modelId == dispatch.modelId,
-              handoff.execution.effort == dispatch.effort,
-              let followUpRunId = dispatch.followUpRunId,
-              UUID(uuidString: followUpRunId) != nil,
-              dispatch.parentRunId == dispatch.sourceRunId,
-              dispatch.lineageDepth > 0,
-              dispatch.lineageDepth <= Self.maximumReviewFollowups,
-              try reviewDispatchStore.parentDepth(for: dispatch.sourceRunId) + 1
+        guard let review = try reviewStore.validatedReview(runId: dispatch.sourceRunId) else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source review evidence is missing")
+        }
+        guard let handoff = try handoffStore.validatedDeliveredHandoff(
+            runId: dispatch.sourceRunId
+        ) else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "delivered source handoff evidence is missing"
+            )
+        }
+        guard review.runId == dispatch.sourceRunId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source review run ID mismatch")
+        }
+        guard review.conversationId == dispatch.conversationId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source ChatGPT conversation mismatch"
+            )
+        }
+        guard review.assistantMessage == dispatch.assistantMessage else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source assistant response evidence mismatch"
+            )
+        }
+        guard review.capturedAt == dispatch.reviewCapturedAt else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source review capture timestamp mismatch"
+            )
+        }
+        guard handoff.runId == dispatch.sourceRunId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source handoff run ID mismatch")
+        }
+        guard handoff.sourceChat.conversationId == review.conversationId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "delivered handoff ChatGPT conversation mismatch"
+            )
+        }
+        guard handoff.execution.worker == RunWorker.officialVSCode.rawValue else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source run was not served by the official worker"
+            )
+        }
+        guard handoff.project == dispatch.project else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "dispatch project differs from delivered handoff evidence"
+            )
+        }
+        guard let project = store.project(withPath: handoff.project.path) else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source project is no longer saved in Aiflow"
+            )
+        }
+        guard project.id == handoff.project.id, project.name == handoff.project.name else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "saved source project identity mismatch"
+            )
+        }
+        guard let handoffConversationId = handoff.execution.codexConversationId,
+              !handoffConversationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "delivered handoff has no Codex conversation"
+            )
+        }
+        guard handoffConversationId == dispatch.codexConversationId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "source Codex conversation mismatch"
+            )
+        }
+        guard handoff.execution.modelRole == dispatch.modelRole else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source model role mismatch")
+        }
+        guard handoff.execution.modelId == dispatch.modelId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source model ID mismatch")
+        }
+        guard handoff.execution.effort == dispatch.effort else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source reasoning effort mismatch")
+        }
+        guard let followUpRunId = dispatch.followUpRunId,
+              UUID(uuidString: followUpRunId) != nil else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "follow-up run ID is missing or invalid"
+            )
+        }
+        guard dispatch.parentRunId == dispatch.sourceRunId else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("follow-up parent run ID mismatch")
+        }
+        guard dispatch.lineageDepth > 0,
+              dispatch.lineageDepth <= Self.maximumReviewFollowups else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "follow-up lineage depth is out of bounds"
+            )
+        }
+        guard try reviewDispatchStore.parentDepth(for: dispatch.sourceRunId) + 1
                 == dispatch.lineageDepth else {
             throw ChatGPTReviewAutomationError.evidenceMismatch(
-                "dispatch no longer matches immutable review, handoff, project, or lineage evidence"
+                "follow-up lineage parent depth mismatch"
             )
         }
 
-        guard case let .changesRequested(parsedInstruction, recommendation) = try ChatGPTReviewParser.parse(review),
-              dispatch.verdict == "CHANGES_REQUESTED",
-              dispatch.instruction == parsedInstruction,
-              dispatch.recommendedModelRole == recommendation?.modelRole,
+        let parsed: ParsedChatGPTReview
+        do {
+            parsed = try ChatGPTReviewParser.parse(review)
+        } catch {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "immutable source review no longer parses unambiguously"
+            )
+        }
+        guard case let .changesRequested(parsedInstruction, recommendation) = parsed else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("source review verdict mismatch")
+        }
+        guard dispatch.verdict == "CHANGES_REQUESTED" else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch("dispatch verdict mismatch")
+        }
+        guard dispatch.instruction == parsedInstruction else {
+            throw ChatGPTReviewAutomationError.evidenceMismatch(
+                "dispatch instruction differs from immutable review evidence"
+            )
+        }
+        guard dispatch.recommendedModelRole == recommendation?.modelRole,
               dispatch.recommendedEffort == recommendation?.effort else {
             throw ChatGPTReviewAutomationError.evidenceMismatch(
-                "dispatch instruction no longer matches the immutable review"
+                "dispatch recommendation differs from immutable review evidence"
             )
         }
         if dispatch.usesRecommendedExecution == true {
@@ -1509,7 +1626,10 @@ final class WidgetViewModel: ObservableObject {
 
     private func refreshReviewLoopStatus() {
         do {
-            let evidence = try reviewLoopEvidenceSnapshot()
+            // Store enumeration validates every record's structure and immutable dispatch
+            // lineage. Cross-store mismatch is resolved per run during reconciliation rather
+            // than latching all future automation behind historical terminal evidence.
+            let evidence = (reviews: try reviewStore.allReviews(), dispatches: try reviewDispatchStore.allRecords())
             let snapshot = ReviewLoopReadModel.make(
                 reviews: evidence.reviews,
                 dispatches: evidence.dispatches
@@ -1532,7 +1652,10 @@ final class WidgetViewModel: ObservableObject {
 
     func recheckReviewEvidence() {
         do {
-            _ = try reviewLoopEvidenceSnapshot()
+            // Fresh structural validation only. Per-run review/handoff mismatches remain
+            // fail-closed in reconciliation and execution validation below.
+            _ = try reviewStore.allReviews()
+            _ = try reviewDispatchStore.allRecords()
             reviewAutomationBlocked = false
             reviewAutomationBlockReason = nil
             reconcileDurableReviewsAndResume()
@@ -1814,8 +1937,26 @@ extension RunState {
 // These let the unit tests drive state that would otherwise require a live CLI, a real
 // clipboard, or an actual Codex process. They are not used by the app itself.
 extension WidgetViewModel {
+    var persistentStorageURLsForTesting: [URL] {
+        [
+            store.fileURL,
+            map.fileURL,
+            handoffStore.directoryURL,
+            handoffStore.deliveredDirectoryURL,
+            reviewStore.directoryURL,
+            reviewDispatchStore.directoryURL,
+            initialRoutingStore.directoryURL,
+            BridgeToken.defaultFileURL(),
+            HandoffToken.defaultFileURL(),
+        ]
+    }
+
     func reconcileReviewsForTesting() {
         reconcileDurableReviewsAndResume()
+    }
+
+    func handlePersistedReviewForTesting(_ review: ChatGPTReview) {
+        handlePersistedReview(review)
     }
 
     func reconcileInitialRoutingAfterRestartForTesting() {

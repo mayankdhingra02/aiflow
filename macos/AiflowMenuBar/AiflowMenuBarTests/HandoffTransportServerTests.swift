@@ -229,6 +229,27 @@ final class HandoffTransportServerTests: XCTestCase {
         )
     }
 
+    func testBlockedHandoffDoesNotStarveNewerPendingHandoff() throws {
+        let blocked = sampleHandoff(finishedAt: 1)
+        let newer = sampleHandoff(finishedAt: 2)
+        try store.persist(blocked)
+        try store.persist(newer)
+
+        _ = try receiveEvent()
+        try send(.auth(token: token))
+        XCTAssertEqual(try receiveEvent().type, .ready)
+        try send(.next())
+        XCTAssertEqual(try receiveEvent().runId, blocked.runId)
+
+        // The browser keeps its terminal ambiguity evidence; this merely releases this
+        // connection's queue slot so a separate safe run remains deliverable.
+        try send(.blocked(runId: blocked.runId))
+        try send(.next())
+        XCTAssertEqual(try receiveEvent().runId, newer.runId)
+        XCTAssertEqual(store.handoff(runId: blocked.runId), blocked)
+        XCTAssertEqual(store.handoff(runId: newer.runId), newer)
+    }
+
     func testMismatchedDeliveryCannotMoveAnotherRun()
         throws
     {

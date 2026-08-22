@@ -18,17 +18,7 @@ final class RunResultHandoffStore {
     let deliveredDirectoryURL: URL
 
     static func defaultBaseDirectoryURL() -> URL {
-        let base =
-            FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-
-        return base.appendingPathComponent(
-            "Aiflow/handoffs",
-            isDirectory: true
-        )
+        AiflowStorageRoot.url("handoffs", isDirectory: true)
     }
 
     static func defaultDirectoryURL() -> URL {
@@ -49,9 +39,11 @@ final class RunResultHandoffStore {
         directoryURL: URL = RunResultHandoffStore.defaultDirectoryURL(),
         deliveredDirectoryURL: URL? = nil
     ) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(directoryURL)
         self.directoryURL = directoryURL
 
         if let deliveredDirectoryURL {
+            AiflowStorageRoot.assertSafeForCurrentProcess(deliveredDirectoryURL)
             self.deliveredDirectoryURL = deliveredDirectoryURL
         } else if directoryURL.standardizedFileURL
             == RunResultHandoffStore.defaultDirectoryURL().standardizedFileURL

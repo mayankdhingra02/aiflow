@@ -12,10 +12,7 @@ enum BridgeToken {
     static let fileName = "bridge-token"
 
     static func defaultFileURL() -> URL {
-        let base =
-            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Aiflow/\(fileName)")
+        AiflowStorageRoot.url(fileName)
     }
 
     /// Loads the token, creating it on first use. Returns nil only if it cannot be persisted,
@@ -29,6 +26,7 @@ enum BridgeToken {
     }
 
     static func load(at url: URL = defaultFileURL()) -> String? {
+        AiflowStorageRoot.assertSafeForCurrentProcess(url)
         guard let data = try? Data(contentsOf: url) else { return nil }
         let token = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,6 +47,7 @@ enum BridgeToken {
     /// Writes the token readable and writable by this user only (0600).
     @discardableResult
     static func write(_ token: String, to url: URL) -> Bool {
+        AiflowStorageRoot.assertSafeForCurrentProcess(url)
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

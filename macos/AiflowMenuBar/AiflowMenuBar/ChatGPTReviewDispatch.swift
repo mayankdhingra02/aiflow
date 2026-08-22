@@ -60,16 +60,13 @@ final class ChatGPTReviewDispatchStore {
         directoryURL: URL = ChatGPTReviewDispatchStore.defaultDirectoryURL(),
         beforeWrite: ((ChatGPTReviewDispatch) throws -> Void)? = nil
     ) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(directoryURL)
         self.directoryURL = directoryURL
         self.beforeWrite = beforeWrite
     }
 
     static func defaultDirectoryURL() -> URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Aiflow/review-dispatches", isDirectory: true)
+        AiflowStorageRoot.url("review-dispatches", isDirectory: true)
     }
 
     func record(sourceRunId: String) throws -> ChatGPTReviewDispatch? {

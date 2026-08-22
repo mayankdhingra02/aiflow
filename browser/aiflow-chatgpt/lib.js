@@ -146,6 +146,10 @@ export function buildRoutingMessage(request) {
 export function routingMessageIsBounded(message) { const text = String(message ?? ""); return text.trim().length > 0 && new TextEncoder().encode(text).length <= 32 * 1024; }
 export function buildRoutingResponseCommand(response) { return { type: "routing_response", ...response }; }
 
+// A missing reply means the content script was not reached. Any reply, including a rejection,
+// proves it received the delivery command and is a no-retry boundary for the routing sentinel.
+export function routingDeliveryMayRetry(attempt) { return attempt?.reached !== true; }
+
 // Browser result and initial-routing delivery are independent server channels. A channel may
 // coalesce a duplicate while its first operation is active, but it must never block the other.
 export function createChannelAdmission() {

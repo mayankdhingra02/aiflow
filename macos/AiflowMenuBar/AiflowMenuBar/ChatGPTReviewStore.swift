@@ -13,18 +13,11 @@ final class ChatGPTReviewStore {
     let directoryURL: URL
 
     static func defaultDirectoryURL() -> URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-
-        return base.appendingPathComponent(
-            "Aiflow/reviews/pending",
-            isDirectory: true
-        )
+        AiflowStorageRoot.url("reviews/pending", isDirectory: true)
     }
 
     init(directoryURL: URL = ChatGPTReviewStore.defaultDirectoryURL()) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(directoryURL)
         self.directoryURL = directoryURL
     }
 

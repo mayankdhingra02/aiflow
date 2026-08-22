@@ -38,10 +38,15 @@ enum CodexInitialRoutingParserError: Error, Equatable { case invalidContract }
 enum CodexInitialRoutingParser {
     static func parse(_ text: String) throws -> CodexInitialRoutingSelection {
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: "\n")
-        guard lines.count == 5, lines[0] == "# Codex Routing", lines[1] == "## Model",
-              lines[3] == "## Reasoning", ["luna", "terra", "sol"].contains(lines[2]),
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let markdown = ["# Codex Routing", "## Model", "", "## Reasoning", ""]
+        let rendered = ["Codex Routing", "Model", "", "Reasoning", ""]
+        guard lines.count == 5,
+              (lines[0] == markdown[0] && lines[1] == markdown[1] && lines[3] == markdown[3] ||
+               lines[0] == rendered[0] && lines[1] == rendered[1] && lines[3] == rendered[3]),
+              ["luna", "terra", "sol"].contains(lines[2]),
               ["low", "medium", "high", "xhigh"].contains(lines[4])
         else { throw CodexInitialRoutingParserError.invalidContract }
         return .init(modelRole: lines[2], effort: lines[4])
@@ -64,12 +69,13 @@ final class CodexInitialRoutingStore {
     let directoryURL: URL
 
     static func defaultDirectoryURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Aiflow/initial-routing", isDirectory: true)
+        AiflowStorageRoot.url("initial-routing", isDirectory: true)
     }
 
-    init(directoryURL: URL = CodexInitialRoutingStore.defaultDirectoryURL()) { self.directoryURL = directoryURL }
+    init(directoryURL: URL = CodexInitialRoutingStore.defaultDirectoryURL()) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(directoryURL)
+        self.directoryURL = directoryURL
+    }
 
     func persist(_ request: CodexInitialRoutingRequest) throws {
         guard isValid(request) else { throw CodexInitialRoutingStoreError.invalidRecord }

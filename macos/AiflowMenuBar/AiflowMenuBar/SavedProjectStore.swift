@@ -1,5 +1,116 @@
 import Foundation
 
+/// The single boundary for every file Aiflow owns under Application Support.
+///
+/// The unit-test bundle is application-hosted, so the app lifecycle and `WidgetViewModel.shared`
+/// run before individual tests can inject temporary stores. XCTest must therefore be detected at
+/// this boundary rather than in test setup. All default stores share one process-local temporary
+/// root in tests, while production continues to use Application Support/Aiflow.
+enum AiflowStorageRoot {
+    private static let directoryName = "Aiflow"
+
+    static var isRunningUnderXCTest: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    static let isolatedTestRootURL: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "Aiflow-XCTest-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+
+    static var productionRootURL: URL {
+        productionRoot(
+            applicationSupportDirectory: FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        )
+    }
+
+    static var currentRootURL: URL {
+        let resolved = resolve(
+            applicationSupportDirectory: productionRootURL.deletingLastPathComponent(),
+            isRunningUnderXCTest: isRunningUnderXCTest,
+            isolatedTestRoot: isolatedTestRootURL
+        )
+        assertSafeForCurrentProcess(resolved)
+        return resolved
+    }
+
+    static func productionRoot(applicationSupportDirectory: URL) -> URL {
+        applicationSupportDirectory.appendingPathComponent(directoryName, isDirectory: true)
+    }
+
+    static func resolve(
+        applicationSupportDirectory: URL,
+        isRunningUnderXCTest: Bool,
+        isolatedTestRoot: URL
+    ) -> URL {
+        isRunningUnderXCTest
+            ? isolatedTestRoot
+            : productionRoot(applicationSupportDirectory: applicationSupportDirectory)
+    }
+
+    static func url(_ relativePath: String, isDirectory: Bool = false) -> URL {
+        let target = currentRootURL.appendingPathComponent(
+            relativePath,
+            isDirectory: isDirectory
+        )
+        assertSafeForCurrentProcess(target)
+        return target
+    }
+
+    static func isContained(_ target: URL, in root: URL) -> Bool {
+        let targetComponents = target.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let rootComponents = root.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        guard targetComponents.count >= rootComponents.count else { return false }
+        return Array(targetComponents.prefix(rootComponents.count)) == rootComponents
+    }
+
+    static func isSafeForCurrentProcess(_ target: URL) -> Bool {
+        isSafe(
+            target,
+            isRunningUnderXCTest: isRunningUnderXCTest,
+            productionRoot: productionRootURL
+        )
+    }
+
+    static func isSafe(
+        _ target: URL,
+        isRunningUnderXCTest: Bool,
+        productionRoot: URL
+    ) -> Bool {
+        !isRunningUnderXCTest || !isContained(target, in: productionRoot)
+    }
+
+    static func assertSafeForCurrentProcess(
+        _ target: URL,
+        file: StaticString = #fileID,
+        line: UInt = #line
+    ) {
+        precondition(
+            isSafeForCurrentProcess(target),
+            "XCTest attempted to access production Aiflow storage: \(target.path)",
+            file: file,
+            line: line
+        )
+    }
+
+    static let isolatedTestDefaults: UserDefaults = {
+        let suite = "local.aiflow.menubar.xctest.\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
+        return UserDefaults(suiteName: suite) ?? UserDefaults()
+    }()
+
+    static func defaultUserDefaults() -> UserDefaults {
+        isRunningUnderXCTest ? isolatedTestDefaults : .standard
+    }
+}
+
 /// Loads/saves the one-click project list as JSON under Application Support.
 ///
 /// Deliberately a plain inspectable file rather than the Aiflow SQLite database: the saved
@@ -9,16 +120,14 @@ final class SavedProjectStore {
     private(set) var projects: [SavedProject] = []
     private(set) var loadError: String?
 
-    private let fileURL: URL
+    let fileURL: URL
 
     static func defaultFileURL() -> URL {
-        let base =
-            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Aiflow/saved-projects.json")
+        AiflowStorageRoot.url("saved-projects.json")
     }
 
     init(fileURL: URL = SavedProjectStore.defaultFileURL()) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(fileURL)
         self.fileURL = fileURL
         load()
     }

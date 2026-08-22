@@ -19,6 +19,12 @@ final class InitialRoutingTests: XCTestCase {
         XCTAssertThrowsError(try CodexInitialRoutingParser.parse("# Codex Routing\n## Model\nsol\n## Reasoning\nhigh\nextra"))
     }
 
+    func testParserAcceptsRenderedDOMTextAndCRLFOnlyInTheExactShape() throws {
+        XCTAssertEqual(try CodexInitialRoutingParser.parse("Codex Routing\r\nModel\r\n\r\nluna\r\n\r\nReasoning\r\n\r\nmedium"), .init(modelRole: "luna", effort: "medium"))
+        XCTAssertThrowsError(try CodexInitialRoutingParser.parse("Codex Routing\nModel\nluna\nReasoning\nmedium\nNotes\nnone"))
+        XCTAssertThrowsError(try CodexInitialRoutingParser.parse("Codex Routing\nModel\ngpt-5.6-sol\nReasoning\nmedium"))
+    }
+
     func testRestartDoesNotReplayDeliveredRequest() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

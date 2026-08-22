@@ -6,8 +6,10 @@ import {
   buildRoutingMessage,
   buildRoutingResponseCommand,
   routingMessageIsBounded,
+  routingDeliveryMayRetry,
   createChannelAdmission
 } from "./lib.js";
+import { createReviewStateRepository, rearmUnresolvedReviews } from "./reviewState.js";
 
 const WS_URL =
   "ws://127.0.0.1:47322";
@@ -24,6 +26,7 @@ const channelAdmission = createChannelAdmission();
 let authenticated = false;
 let connecting = false;
 let authenticationRejected = false;
+const reviewState = createReviewStateRepository(chrome.storage.local);
 
 chrome.action.onClicked.addListener(() => {
   chrome.runtime.openOptionsPage();
@@ -395,15 +398,19 @@ async function handleServerMessage(
       if (
         [
           "invalid_review",
-          "invalid_run_id",
           "review_conflict",
-          "conversation_mismatch"
+          "conversation_mismatch",
+          "invalid_run_id"
         ].includes(event.error)
       ) {
         await discardReview(
           event.runId,
           event.error
         );
+      } else if (event.runId) {
+        // Non-terminal server failures retain pending evidence for reconnect retry, but they
+        // still become durable lifecycle evidence when this run has a pending review.
+        await reviewState.recordServerRejection(event.runId, event.error);
       }
 
       if (
@@ -483,7 +490,10 @@ async function handleHandoff(handoff) {
         "Aiflow delivery is blocked:",
         stored.blockedReason
       );
-
+      // Preserve the blocked evidence locally, but release only this connection's in-flight
+      // slot so a newer pending handoff cannot be starved behind it.
+      send({ type: "blocked", runId: handoff.runId });
+      requestNextSoon(100);
       return;
     }
 
@@ -700,14 +710,16 @@ async function handleRouting(request) {
       sentinel: `[Aiflow routing ${request.runId}]`
     };
     await chrome.storage.local.set({ routingCorrelations });
-    const response = await chrome.tabs.sendMessage(tab.id, {
+    const response = await sendRoutingToContentScript(tab.id, {
       type: "aiflow-deliver-routing",
       runId: request.runId,
       conversationId: request.sourceChat.conversationId,
       sentinel: `[Aiflow routing ${request.runId}]`,
       text: buildRoutingMessage(request)
     });
-    if (!response?.ok) {
+    // Retry only transport failures that prove the content script never received the message.
+    // Once it answered, its outcome is authoritative: retrying could duplicate the sentinel.
+    if (routingDeliveryMayRetry(response) || !response.value?.ok) {
       delete routingCorrelations[request.runId];
       await chrome.storage.local.set({ routingCorrelations });
       send({ type: "routing_failed", runId: request.runId });
@@ -720,6 +732,20 @@ async function handleRouting(request) {
     channelAdmission.leave("routing");
     requestRoutingSoon(100);
   }
+}
+
+async function sendRoutingToContentScript(tabId, message) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try {
+      const value = await chrome.tabs.sendMessage(tabId, message);
+      return { reached: true, value };
+    } catch {
+      // A reload can briefly remove the content script. No command reached it, so bounded retry
+      // is safe; a returned response is never retried.
+      await sleep(500);
+    }
+  }
+  return { reached: false, value: null };
 }
 
 async function requestRoutingObservation(runId, correlation) {
@@ -800,81 +826,85 @@ async function removeDeliveryReceipt(
 }
 
 async function rememberReviewCorrelation(handoff) {
-  const stored = await chrome.storage.local.get("reviewCorrelations");
-  const correlations = { ...(stored.reviewCorrelations || {}) };
-  correlations[handoff.runId] = {
-    ...(correlations[handoff.runId] || {}),
-    conversationId: handoff.sourceChat.conversationId,
-    sentinel: `[Aiflow result ${handoff.runId}]`,
-    deliveryAcknowledged: false,
-    reviewAcknowledged: false
-  };
-  await chrome.storage.local.set({ reviewCorrelations: correlations });
-  await requestReviewObservation(handoff.runId, correlations[handoff.runId]);
+  const correlation = await reviewState.remember(handoff);
+  await requestReviewObservation(handoff.runId, correlation);
 }
 
 async function markDeliveryAcknowledged(runId) {
   if (!runId) return;
-  const { reviewCorrelations = {} } = await chrome.storage.local.get("reviewCorrelations");
-  if (!reviewCorrelations[runId]) return;
-  reviewCorrelations[runId].deliveryAcknowledged = true;
-  await chrome.storage.local.set({ reviewCorrelations });
+  await reviewState.markDeliveryAcknowledged(runId);
 }
 
 async function markReviewAcknowledged(runId) {
   if (!runId) return;
-  const stored = await chrome.storage.local.get(["reviewCorrelations", "pendingReviews"]);
-  const correlations = { ...(stored.reviewCorrelations || {}) };
-  delete correlations[runId];
-  const pendingReviews = { ...(stored.pendingReviews || {}) };
-  delete pendingReviews[runId];
-  await chrome.storage.local.set({ reviewCorrelations: correlations, pendingReviews });
+  await reviewState.acknowledgeReview(runId);
 }
 
 async function discardReview(runId, reason) {
   if (!runId) return;
-  const stored = await chrome.storage.local.get(["reviewCorrelations", "pendingReviews"]);
-  const correlations = { ...(stored.reviewCorrelations || {}) };
-  const pendingReviews = { ...(stored.pendingReviews || {}) };
-  delete correlations[runId];
-  delete pendingReviews[runId];
-  await chrome.storage.local.set({ reviewCorrelations: correlations, pendingReviews });
-  console.warn("Aiflow discarded terminal review evidence:", reason, runId);
+  const discarded = await reviewState.rejectReview(runId, reason);
+  if (discarded) console.warn("Aiflow discarded terminal review evidence:", reason, runId);
 }
 
 async function resumeReviewObservations() {
-  const { reviewCorrelations = {} } = await chrome.storage.local.get("reviewCorrelations");
-  await Promise.all(Object.entries(reviewCorrelations).map(([runId, correlation]) =>
-    correlation.reviewAcknowledged ? null : requestReviewObservation(runId, correlation)
-  ));
+  await rearmUnresolvedReviews(reviewState, requestReviewObservation);
 }
 
 async function requestReviewObservation(runId, correlation) {
-  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
+  } catch {
+    await reviewState.recordObservationFailure(runId, "tab_query_failed");
+    scheduleReviewObservationRetry(runId, correlation);
+    return false;
+  }
   const target = `https://chatgpt.com/c/${correlation.conversationId}`;
   const tab = tabs.find(candidate => canonicalChatURL(candidate.url) === target);
-  if (!tab?.id) return;
+  if (!tab?.id) {
+    await reviewState.recordObservationFailure(runId, "target_tab_not_found");
+    scheduleReviewObservationRetry(runId, correlation);
+    return false;
+  }
   try {
-    await chrome.tabs.sendMessage(tab.id, {
+    const response = await chrome.tabs.sendMessage(tab.id, {
       type: "aiflow-observe-review",
       runId,
       conversationId: correlation.conversationId,
       sentinel: correlation.sentinel
     });
+    if (!response?.ok) {
+      await reviewState.recordObservationFailure(runId, "observer_not_armed");
+      scheduleReviewObservationRetry(runId, correlation);
+      return false;
+    }
+    await reviewState.markObserverArmed(runId);
+    return true;
   } catch {
+    await reviewState.recordObservationFailure(runId, "send_message_failed");
+    scheduleReviewObservationRetry(runId, correlation);
+    return false;
   }
+}
+
+function scheduleReviewObservationRetry(runId, correlation) {
+  setTimeout(async () => {
+    if (!authenticated) return;
+    const current = await reviewState.correlation(runId);
+    if (current && current.conversationId === correlation.conversationId && !current.reviewAcknowledged) {
+      await requestReviewObservation(runId, current);
+    }
+  }, RETRY_MS);
 }
 
 async function submitPendingReviews() {
   if (!authenticated) return;
-  const { pendingReviews = {} } = await chrome.storage.local.get("pendingReviews");
-  for (const review of Object.values(pendingReviews)) sendReview(review);
+  for (const review of await reviewState.pending()) await submitReview(review);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== "aiflow-review-captured") return;
-  chrome.storage.local.get("reviewCorrelations").then(async ({ reviewCorrelations = {} }) => {
-    const correlation = reviewCorrelations[message.runId];
+  reviewState.correlation(message.runId).then(async (correlation) => {
     if (!correlation || correlation.conversationId !== message.conversationId || correlation.reviewAcknowledged) {
       sendResponse({ ok: false });
       return;
@@ -885,10 +915,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     const review = { runId: message.runId, conversationId: message.conversationId, assistantMessage: message.assistantMessage };
-    const pendingReviews = await chrome.storage.local.get("pendingReviews");
-    await chrome.storage.local.set({ pendingReviews: { ...(pendingReviews.pendingReviews || {}), [message.runId]: review } });
-    sendReview(review);
-    sendResponse({ ok: true });
+    const captured = await reviewState.captureReview(review);
+    if (captured) await submitReview(review);
+    sendResponse({ ok: captured });
+  });
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "aiflow-review-observation-failed") return;
+  reviewState.recordObservationFailure(message.runId, message.reason || "observer_timeout").then(async (recorded) => {
+    if (recorded) {
+      const correlation = await reviewState.correlation(message.runId);
+      if (correlation) scheduleReviewObservationRetry(message.runId, correlation);
+    }
+    sendResponse({ ok: recorded });
   });
   return true;
 });
@@ -947,8 +988,10 @@ function send(message) {
   return true;
 }
 
-function sendReview(review) {
-  return send(buildReviewCommand(review));
+async function submitReview(review) {
+  const submitted = send(buildReviewCommand(review));
+  if (submitted) await reviewState.markReviewSubmitted(review.runId);
+  return submitted;
 }
 
 function requestNextSoon(delay) {

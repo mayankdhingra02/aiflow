@@ -26,7 +26,11 @@ function identity(size: number, mtimeMs = 1): SessionFileIdentity {
     return { size, mtimeMs, ino: size, dev: 1 };
 }
 
-function sessionRecords(cwd = REPOSITORY, complete = true): SessionRecord[] {
+function sessionRecords(
+    cwd = REPOSITORY,
+    complete = true,
+    writableRoots?: string[]
+): SessionRecord[] {
     const records: SessionRecord[] = [
         { type: 'session_meta', payload: { id: CONVERSATION } },
         { type: 'event_msg', payload: { type: 'user_message', text: `AIFLOW_BOOTSTRAP_OK_${NONCE}` } },
@@ -37,7 +41,7 @@ function sessionRecords(cwd = REPOSITORY, complete = true): SessionRecord[] {
                 cwd,
                 approval_policy: 'on-request',
                 approvals_reviewer: 'user',
-                sandbox_policy: { type: 'workspace-write' }
+                sandbox_policy: { type: 'workspace-write', writable_roots: writableRoots }
             }
         }
     ];
@@ -224,6 +228,45 @@ test('wrong cwd is rejected and the temp file is removed', async () => {
         (error: BootstrapError) => error.code === 'wrong_workspace'
     );
     assert.deepEqual(h.removed, [BOOTSTRAP_FILE]);
+});
+
+test('bootstrap rejects a stale writable root from another project', async () => {
+    const candidate = '/sessions/new.jsonl';
+    const h = harness(
+        new Map([[candidate, identity(30)]]),
+        new Map([[candidate, sessionRecords(REPOSITORY, true, [
+            '/tmp/aiflow-acceptance',
+            '/tmp'
+        ])]])
+    );
+
+    await assert.rejects(
+        () => bootstrapFreshThread(REPOSITORY, h.deps, {
+            discoveryTimeoutMs: 100,
+            completionTimeoutMs: 100,
+            pollIntervalMs: 1
+        }),
+        (error: BootstrapError) => error.code === 'workspace_isolation_unavailable'
+    );
+    assert.deepEqual(h.removed, [BOOTSTRAP_FILE]);
+});
+
+test('bootstrap preserves exact workspace and system temporary roots', async () => {
+    const candidate = '/sessions/new.jsonl';
+    const h = harness(
+        new Map([[candidate, identity(30)]]),
+        new Map([[candidate, sessionRecords(REPOSITORY, true, [
+            REPOSITORY,
+            '/private/tmp'
+        ])]])
+    );
+
+    const result = await bootstrapFreshThread(REPOSITORY, h.deps, {
+        discoveryTimeoutMs: 100,
+        completionTimeoutMs: 100,
+        pollIntervalMs: 1
+    });
+    assert.equal(result.conversationId, CONVERSATION);
 });
 
 test('command failure still cleans up the Aiflow-owned temp file', async () => {

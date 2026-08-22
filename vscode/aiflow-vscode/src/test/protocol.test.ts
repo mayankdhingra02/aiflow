@@ -442,6 +442,24 @@ test('a duplicate of the active run is ignored, not rejected', () => {
     assert.equal(admitRun('run-1', 'run-1'), 'ignore-duplicate');
 });
 
+test('duplicate execute_run delivery for the active run does not start a second Codex turn', () => {
+    const executeRun = (runId: string): void => {
+        if (admitRun(activeRunId, runId) !== 'start') {
+            return;
+        }
+        activeRunId = runId;
+        startedCodexTurns += 1;
+    };
+    let activeRunId: string | undefined;
+    let startedCodexTurns = 0;
+
+    executeRun('run-1');
+    executeRun('run-1');
+
+    assert.equal(activeRunId, 'run-1');
+    assert.equal(startedCodexTurns, 1);
+});
+
 test('a different run while one is active is rejected as busy', () => {
     assert.equal(admitRun('run-1', 'run-2'), 'reject-busy');
 });
@@ -469,6 +487,63 @@ test('a completed run lands on completed and keeps the final message', () => {
     assert.equal(statusLabel(state), 'Completed');
     assert.equal(state.lastMessage, 'AIFLOW_OK');
     assert.equal(state.project, '/repos/demo', 'the project stays visible on the terminal state');
+});
+
+test('a duplicate completion for the same official-worker run remains terminal', () => {
+    const runId = 'run-1';
+    let state = reduce(connectedState(), {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'running'
+    });
+
+    state = reduce(state, terminalEvent('completed', { finalMessage: `${runId}: done` }));
+    // The authoritative terminal snapshot has no active project. A reconnect can then
+    // redeliver the completion report for this same run.
+    state = reduce(state, { type: 'snapshot', connected: true, runState: 'completed' });
+    state = reduce(state, terminalEvent('completed', { finalMessage: `${runId}: done` }));
+
+    assert.equal(state.runState, 'completed');
+    assert.equal(statusLabel(state), 'Completed');
+    assert.equal(state.lastMessage, `${runId}: done`);
+    assert.equal(state.project, undefined, 'a duplicate terminal event cannot restore an active project');
+});
+
+test('a duplicate worker_completed event preserves the completed run final message', () => {
+    let state = reduce(connectedState(), {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'running'
+    });
+    state = reduce(state, terminalEvent('completed', { finalMessage: 'AIFLOW_FINAL' }));
+    state = reduce(state, {
+        type: 'snapshot', connected: true, runState: 'completed', message: 'AIFLOW_FINAL'
+    });
+
+    // A duplicate worker_completed report has no newer terminal text to replace the first.
+    state = reduce(state, terminalEvent('completed'));
+
+    assert.equal(state.runState, 'completed');
+    assert.equal(state.lastMessage, 'AIFLOW_FINAL');
+    assert.equal(state.project, undefined, 'a duplicate completion cannot restore an active project');
+});
+
+test('an official worker completion snapshot stays completed with no active project', () => {
+    let state = reduce(connectedState(), {
+        type: 'run_started',
+        project: '/repos/demo',
+        runState: 'running'
+    });
+    state = reduce(state, terminalEvent('completed', { finalMessage: 'AIFLOW_OK' }));
+
+    // The macOS app clears its active project after accepting the official worker's terminal
+    // report, then sends the companion its authoritative terminal snapshot.
+    state = reduce(state, { type: 'snapshot', connected: true, runState: 'completed' });
+
+    assert.equal(statusLabel(state), 'Completed');
+    assert.equal(state.runState, 'completed');
+    assert.equal(state.project, undefined);
+    assert.equal(state.lastMessage, undefined);
 });
 
 test('an interrupted run lands on cancelled, not stuck on cancelling', () => {

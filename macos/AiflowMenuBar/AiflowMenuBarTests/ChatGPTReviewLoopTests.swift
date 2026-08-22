@@ -225,6 +225,74 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(records.first?.state, .pending)
     }
 
+    func testLivePersistedMismatchStaysManualAndDoesNotBlockAnUnrelatedReview() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        let mismatchedRunId = UUID().uuidString
+        let validRunId = UUID().uuidString
+        let mismatched = ChatGPTReview(
+            runId: mismatchedRunId,
+            conversationId: "chat",
+            sourceChatURL: "https://chatgpt.com/c/chat",
+            assistantMessage: "# Implementation Review\n## Verdict\nSHIP",
+            capturedAt: date
+        )
+        // This review is durable, but has no trusted delivered handoff from which a dispatch
+        // record could safely inherit a project or execution identity.
+        try harness.reviewStore.persist(mismatched)
+
+        harness.viewModel.handlePersistedReviewForTesting(mismatched)
+
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertEqual(notifications.manualAttentionRunIds, [mismatchedRunId])
+        XCTAssertNil(try harness.dispatchStore.record(sourceRunId: mismatchedRunId))
+
+        try persistChangesRequestedEvidence(runId: validRunId, harness: harness)
+        let valid = try XCTUnwrap(harness.reviewStore.validatedReview(runId: validRunId))
+        harness.viewModel.handlePersistedReviewForTesting(valid)
+
+        XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: validRunId)?.state, .pending)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+
+        // Replayed callback and restart reconciliation keep the valid dispatch unique and do
+        // not let the mismatched run poison it.
+        harness.viewModel.handlePersistedReviewForTesting(mismatched)
+        harness.viewModel.handlePersistedReviewForTesting(valid)
+        harness.viewModel.reconcileReviewsForTesting()
+
+        XCTAssertEqual(try harness.dispatchStore.allRecords().map(\.sourceRunId), [validRunId])
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+    }
+
+    func testLivePersistedReviewStructuralStoreFailureStillBlocksAutomation() throws {
+        let notifications = RecordingNotifications()
+        let harness = try makeHarness(notifications: notifications)
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        let review = ChatGPTReview(
+            runId: runId,
+            conversationId: "chat",
+            sourceChatURL: "https://chatgpt.com/c/chat",
+            assistantMessage: "# Implementation Review\n## Verdict\nSHIP",
+            capturedAt: date
+        )
+        try harness.reviewStore.persist(review)
+        try FileManager.default.createDirectory(
+            at: harness.reviewStore.directoryURL,
+            withIntermediateDirectories: true
+        )
+        try Data("not-json".utf8).write(
+            to: harness.reviewStore.directoryURL.appendingPathComponent("corrupt.json")
+        )
+
+        harness.viewModel.handlePersistedReviewForTesting(review)
+
+        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertEqual(notifications.blockReasons.count, 1)
+        XCTAssertNil(try harness.dispatchStore.record(sourceRunId: runId))
+    }
+
     func testOrphanShipReviewRecoversStoppedStateWithoutSending() throws {
         let harness = try makeHarness()
         defer { harness.remove() }
@@ -653,7 +721,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         )
 
         harness.viewModel.recheckReviewEvidence()
-        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
     }
 
     func testCompletedFollowUpRequiresHandoffEvidence() throws {
@@ -665,7 +733,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         try harness.dispatchStore.update(sourceRunId: runId, state: .completed)
 
         harness.viewModel.recheckReviewEvidence()
-        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
     }
 
     func testCompletedFollowUpRejectsConversationAndProjectMismatch() throws {
@@ -692,7 +760,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             )
 
             harness.viewModel.recheckReviewEvidence()
-            XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
+            XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
         }
     }
 
@@ -714,6 +782,100 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertNil(dispatch.recommendedModelRole)
         XCTAssertNil(dispatch.recommendedEffort)
         XCTAssertNotEqual(dispatch.usesRecommendedExecution, true)
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+    }
+
+    func testShipReviewForCompletedFollowUpPersistsTerminalChildWithoutStartingAnotherRun() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let sourceRunId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: sourceRunId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        let parent = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: sourceRunId))
+        let followUpRunId = try XCTUnwrap(parent.followUpRunId)
+        try harness.dispatchStore.update(sourceRunId: sourceRunId, state: .completed)
+        try persistFollowUpHandoff(
+            runId: followUpRunId,
+            modelRole: "terra",
+            modelId: "gpt-5.6-terra",
+            effort: "low",
+            harness: harness
+        )
+        try harness.handoffStore.markDelivered(runId: followUpRunId)
+        try harness.reviewStore.persist(ChatGPTReview(
+            runId: followUpRunId,
+            conversationId: "chat",
+            sourceChatURL: "https://chatgpt.com/c/chat",
+            assistantMessage: "Implementation Review\nVerdict\n\nSHIP",
+            capturedAt: date
+        ))
+
+        let unrelatedRunId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: unrelatedRunId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.recheckReviewEvidence()
+        harness.viewModel.recheckReviewEvidence()
+
+        let unchangedParent = try XCTUnwrap(
+            harness.dispatchStore.record(sourceRunId: sourceRunId)
+        )
+        let terminalChild = try XCTUnwrap(
+            harness.dispatchStore.record(sourceRunId: followUpRunId)
+        )
+        XCTAssertEqual(unchangedParent.state, .completed)
+        XCTAssertEqual(unchangedParent.followUpRunId, followUpRunId)
+        XCTAssertEqual(terminalChild.state, .stopped)
+        XCTAssertEqual(terminalChild.verdict, "SHIP")
+        XCTAssertEqual(terminalChild.lineageDepth, unchangedParent.lineageDepth)
+        XCTAssertNil(terminalChild.followUpRunId)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertEqual(
+            try harness.dispatchStore.record(sourceRunId: unrelatedRunId)?.state,
+            .pending
+        )
+        XCTAssertTrue(harness.recorder.events.isEmpty)
+    }
+
+    func testInvalidReviewForCompletedFollowUpPersistsTerminalChildAtParentDepth() throws {
+        let harness = try makeHarness()
+        defer { harness.remove() }
+        let sourceRunId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: sourceRunId, harness: harness)
+        harness.viewModel.reconcileReviewsForTesting()
+        let parent = try XCTUnwrap(harness.dispatchStore.record(sourceRunId: sourceRunId))
+        let followUpRunId = try XCTUnwrap(parent.followUpRunId)
+        try harness.dispatchStore.update(sourceRunId: sourceRunId, state: .completed)
+        try persistFollowUpHandoff(
+            runId: followUpRunId,
+            modelRole: "terra",
+            modelId: "gpt-5.6-terra",
+            effort: "low",
+            harness: harness
+        )
+        try harness.handoffStore.markDelivered(runId: followUpRunId)
+        try harness.reviewStore.persist(ChatGPTReview(
+            runId: followUpRunId,
+            conversationId: "chat",
+            sourceChatURL: "https://chatgpt.com/c/chat",
+            assistantMessage: "not a bounded implementation review",
+            capturedAt: date
+        ))
+
+        harness.viewModel.reconcileReviewsForTesting()
+        harness.viewModel.recheckReviewEvidence()
+
+        let unchangedParent = try XCTUnwrap(
+            harness.dispatchStore.record(sourceRunId: sourceRunId)
+        )
+        let terminalChild = try XCTUnwrap(
+            harness.dispatchStore.record(sourceRunId: followUpRunId)
+        )
+        XCTAssertEqual(unchangedParent.state, .completed)
+        XCTAssertEqual(terminalChild.state, .manualAttention)
+        XCTAssertEqual(terminalChild.verdict, "INVALID")
+        XCTAssertEqual(terminalChild.lineageDepth, unchangedParent.lineageDepth)
+        XCTAssertNil(terminalChild.followUpRunId)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
         XCTAssertTrue(harness.recorder.events.isEmpty)
     }
 
@@ -768,8 +930,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
         XCTAssertEqual(notifications.manualAttentionProjects, [harness.project.name])
         XCTAssertTrue(harness.recorder.events.isEmpty)
-        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
-        XCTAssertTrue(harness.viewModel.recentReviewLoopRecords.isEmpty)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertFalse(harness.viewModel.recentReviewLoopRecords.isEmpty)
     }
 
     func testBlockedEvidenceRecheckRequiresSuccessfulIntegrityValidation() throws {
@@ -935,6 +1097,37 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         XCTAssertEqual(try harness.dispatchStore.record(sourceRunId: runId)?.state, .manualAttention)
     }
 
+    func testVisiblePopoverClipboardRefreshDoesNotReplaceManualRecoveryPrompt() throws {
+        var clipboardText = "clipboard prompt"
+        let harness = try makeHarness(clipboardString: { clipboardText })
+        defer { harness.remove() }
+        let runId = UUID().uuidString
+        try persistChangesRequestedEvidence(runId: runId, harness: harness)
+        try FileManager.default.createDirectory(atPath: harness.project.path, withIntermediateDirectories: true)
+        harness.viewModel.applyConfigForTesting(CodexConfig(
+            models: [CodexModel(role: "terra", modelId: "gpt-5.6-terra")],
+            reasoningEfforts: ["low"],
+            defaultSandbox: "workspace-write"
+        ))
+        harness.viewModel.reconcileReviewsForTesting()
+        try harness.dispatchStore.update(
+            sourceRunId: runId,
+            state: .manualAttention,
+            reason: "dispatch outcome was ambiguous across restart"
+        )
+        harness.viewModel.reconcileReviewsForTesting()
+        let record = try XCTUnwrap(harness.viewModel.currentReviewLoopStatus)
+
+        harness.viewModel.popoverDidBecomeVisible()
+        harness.viewModel.requestManualRecoveryRun(record)
+        clipboardText = "new clipboard prompt"
+        harness.viewModel.refreshClipboard()
+
+        XCTAssertEqual(harness.viewModel.clipboardPrompt, "new clipboard prompt")
+        XCTAssertTrue(harness.viewModel.confirmationPromptPreview.contains("Fix it."))
+        XCTAssertFalse(harness.viewModel.confirmationPromptPreview.contains("new clipboard prompt"))
+    }
+
     private func parse(_ text: String) throws -> ParsedChatGPTReview {
         try ChatGPTReviewParser.parse(ChatGPTReview(
             runId: UUID().uuidString, conversationId: "chat", sourceChatURL: "https://chatgpt.com/c/chat",
@@ -977,7 +1170,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
 
     private func makeHarness(
         beforeWrite: ((ChatGPTReviewDispatch) throws -> Void)? = nil,
-        notifications: NotificationManaging? = nil
+        notifications: NotificationManaging? = nil,
+        clipboardString: @escaping () -> String? = { nil }
     ) throws -> Harness {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1010,7 +1204,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             reviewStore: reviewStore,
             reviewDispatchStore: dispatchStore,
             now: { self.date },
-            reviewFollowupSender: recorder.send
+            reviewFollowupSender: recorder.send,
+            clipboardString: clipboardString
         )
         return Harness(
             root: root, suiteName: suiteName, project: project,
@@ -1139,8 +1334,8 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         harness.viewModel.setOfficialWorkerAvailable(true)
         harness.viewModel.recheckReviewEvidence()
 
-        XCTAssertTrue(harness.viewModel.reviewAutomationBlocked)
-        XCTAssertTrue(harness.viewModel.recentReviewLoopRecords.isEmpty)
+        XCTAssertFalse(harness.viewModel.reviewAutomationBlocked)
+        XCTAssertFalse(harness.viewModel.recentReviewLoopRecords.isEmpty)
         XCTAssertTrue(harness.recorder.events.isEmpty)
     }
 
@@ -1187,6 +1382,7 @@ final class ChatGPTReviewLoopTests: XCTestCase {
         var shipProjects: [String] = []
         var changesRequestedProjects: [String] = []
         var manualAttentionProjects: [String] = []
+        var manualAttentionRunIds: [String] = []
         var blockReasons: [String] = []
 
         func prepareForRun() async -> Bool { true }
@@ -1198,7 +1394,9 @@ final class ChatGPTReviewLoopTests: XCTestCase {
             switch event {
             case let .reviewShipped(_, projectName): shipProjects.append(projectName)
             case let .reviewChangesRequested(_, projectName): changesRequestedProjects.append(projectName)
-            case let .reviewManualAttention(_, projectName, _): manualAttentionProjects.append(projectName)
+            case let .reviewManualAttention(sourceRunId, projectName, _):
+                manualAttentionRunIds.append(sourceRunId)
+                manualAttentionProjects.append(projectName)
             case let .reviewAutomationBlocked(reason): blockReasons.append(reason)
             default: break
             }
