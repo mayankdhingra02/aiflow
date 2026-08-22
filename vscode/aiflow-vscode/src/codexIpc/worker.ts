@@ -7,6 +7,8 @@ import {
     findStartedTurnIds,
     findTurnResult
 } from './sessionWatcher';
+import { canonicalPath } from './bootstrapper';
+import { validateWorkspaceIsolation } from './workspaceIsolation';
 
 /**
  * Drives one Aiflow run through the official Codex extension.
@@ -28,6 +30,7 @@ export type WorkerFailureCode =
     | 'ipc_unavailable'
     | 'thread_unavailable'
     | 'settings_rejected'
+    | 'workspace_isolation_unavailable'
     | 'start_rejected'
     | 'timed_out'
     | 'turn_failed';
@@ -182,7 +185,15 @@ export class OfficialCodexWorker {
             options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
         );
         const tail = (this.deps.createTail ?? ((p: string) => new SessionTail(p)))(sessionPath);
-        tail.readNew();
+        const existingRecords = tail.readNew();
+        const isolationFailure = validateWorkspaceIsolation(
+            existingRecords,
+            request.workspacePath,
+            canonicalPath
+        );
+        if (isolationFailure) {
+            throw new WorkerError('workspace_isolation_unavailable', isolationFailure.detail);
+        }
 
         if (this.cancelled) {
             return interruptedBeforeTurn();

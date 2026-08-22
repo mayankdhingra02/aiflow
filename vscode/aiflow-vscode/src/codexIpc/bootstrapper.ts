@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { SessionRecord, defaultSessionsRoot } from './sessionWatcher';
+import { validateWorkspaceIsolation } from './workspaceIsolation';
 
 /** The only command that is allowed to create the synthetic first turn. */
 export const BOOTSTRAP_COMMAND = 'chatgpt.implementTodo';
@@ -21,6 +22,7 @@ export type BootstrapFailure =
     | 'conversation_not_found'
     | 'bootstrap_incomplete'
     | 'wrong_workspace'
+    | 'workspace_isolation_unavailable'
     | 'timed_out';
 
 export class BootstrapError extends Error {
@@ -177,11 +179,24 @@ export async function bootstrapFreshThread(
             );
         }
 
-        const recordedCwd = workspaceOf(deps.readSession(candidate), completed.turnId);
+        const completedRecords = deps.readSession(candidate);
+        const recordedCwd = workspaceOf(completedRecords, completed.turnId);
         if (!recordedCwd || deps.canonicalPath(recordedCwd) !== repositoryCanonical) {
             throw new BootstrapError(
                 'wrong_workspace',
                 `the bootstrapped thread is rooted at ${recordedCwd ?? 'an unknown path'}, not ${repositoryPath}`
+            );
+        }
+        const isolationFailure = validateWorkspaceIsolation(
+            completedRecords,
+            repositoryPath,
+            deps.canonicalPath,
+            completed.turnId
+        );
+        if (isolationFailure) {
+            throw new BootstrapError(
+                'workspace_isolation_unavailable',
+                isolationFailure.detail
             );
         }
 

@@ -119,6 +119,18 @@ test('different workspaces get independent conversations', async () => {
     assert.equal(bootstraps.length, 2);
 });
 
+test('project A to B to A never crosses conversation ownership', async () => {
+    const { cache, bootstraps } = harness();
+
+    const firstA = await cache.resolve('/tmp/project-a');
+    const projectB = await cache.resolve('/tmp/project-b');
+    const secondA = await cache.resolve('/tmp/project-a');
+
+    assert.equal(secondA.conversationId, firstA.conversationId);
+    assert.notEqual(projectB.conversationId, firstA.conversationId);
+    assert.deepEqual(bootstraps, ['/tmp/project-a', '/tmp/project-b']);
+});
+
 // MARK: the cache survives run outcomes
 //
 // Completion, cancellation, and ordinary turn failures say nothing about whether the

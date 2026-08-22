@@ -1,8 +1,7 @@
 chrome.runtime.onMessage.addListener(
   (message, sender, sendResponse) => {
     if (message?.type === "aiflow-observe-review") {
-      observeReview(message);
-      sendResponse({ ok: true });
+      sendResponse({ ok: observeReview(message) });
       return;
     }
 
@@ -98,7 +97,7 @@ function cancelRoutingObservation(runId) {
 }
 
 function observeReview(message) {
-  armReviewObservation(message);
+  return armReviewObservation(message);
 }
 
 function armReviewObservation(
@@ -106,7 +105,9 @@ function armReviewObservation(
   options = {}
 ) {
   if (reviewObservers.has(message.runId)) {
-    return false;
+    // A reconnect may re-arm the same durable correlation while this document still has its
+    // observer. That is already a successful observation request, not a transient failure.
+    return true;
   }
 
   if (conversationIdFromLocation() !== message.conversationId) return;
@@ -120,6 +121,14 @@ function armReviewObservation(
     if (Date.now() > deadline || conversationIdFromLocation() !== message.conversationId) {
       clearInterval(timer);
       reviewObservers.delete(message.runId);
+      if (Date.now() > deadline) {
+        chrome.runtime.sendMessage({
+          type: "aiflow-review-observation-failed",
+          runId: message.runId,
+          conversationId: message.conversationId,
+          reason: "observer_timeout"
+        });
+      }
       return;
     }
 

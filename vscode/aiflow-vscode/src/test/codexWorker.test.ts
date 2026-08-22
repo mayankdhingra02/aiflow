@@ -69,6 +69,20 @@ function complete(turnId: string, message: string): SessionRecord {
     };
 }
 
+function context(
+    cwd = '/repos/demo',
+    writableRoots: string[] = ['/tmp']
+): SessionRecord {
+    return {
+        type: 'turn_context',
+        payload: {
+            turn_id: 'existing-turn',
+            cwd,
+            sandbox_policy: { type: 'workspace-write', writable_roots: writableRoots }
+        }
+    };
+}
+
 function makeWorker(
     ipc: FakeIpc,
     batches: SessionRecord[][],
@@ -80,7 +94,7 @@ function makeWorker(
         findSession: () => '/fake/session.jsonl',
         // The worker drains pre-existing history before starting the turn, so the first
         // batch it reads is never part of this run. Model that with a leading empty batch.
-        createTail: () => scriptedTail([[], ...batches]),
+        createTail: () => scriptedTail([[context()], ...batches]),
         // Yield a real macrotask: an await of an already-resolved promise would starve timers.
         delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
         now: () => Date.now()
@@ -145,7 +159,7 @@ test('fresh-thread bootstrap resolves before owner discovery and runs once per w
             return CONV;
         },
         findSession: () => '/fake/session.jsonl',
-        createTail: () => scriptedTail([[], [started('turn-1')], [complete('turn-1', 'ok')]]),
+        createTail: () => scriptedTail([[context()], [started('turn-1')], [complete('turn-1', 'ok')]]),
         delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
         now: () => Date.now()
     });
@@ -169,6 +183,44 @@ test('a rejected settings update fails closed and never starts a turn', async ()
         (error: WorkerError) => error.code === 'settings_rejected'
     );
     assert.ok(!ipc.calls.some((c) => c.op === 'startTurn'), 'no turn may start');
+});
+
+test('an existing conversation with another project writable root starts no turn', async () => {
+    const ipc = new FakeIpc();
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => CONV,
+        findSession: () => '/fake/session.jsonl',
+        createTail: () => scriptedTail([[
+            context('/repos/demo', ['/tmp/aiflow-acceptance', '/tmp'])
+        ]]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
+
+    await assert.rejects(
+        () => worker.run(REQUEST),
+        (error: WorkerError) => error.code === 'workspace_isolation_unavailable'
+    );
+    assert.ok(!ipc.calls.some((call) => call.op === 'startTurn'));
+});
+
+test('an existing conversation rooted at another project starts no turn', async () => {
+    const ipc = new FakeIpc();
+    const worker = new OfficialCodexWorker({
+        ipc: ipc as never,
+        resolveConversation: async () => CONV,
+        findSession: () => '/fake/session.jsonl',
+        createTail: () => scriptedTail([[context('/repos/other-project')]]),
+        delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        now: () => Date.now()
+    });
+
+    await assert.rejects(
+        () => worker.run(REQUEST),
+        (error: WorkerError) => error.code === 'workspace_isolation_unavailable'
+    );
+    assert.ok(!ipc.calls.some((call) => call.op === 'startTurn'));
 });
 
 test('a missing thread owner is a typed failure', async () => {
@@ -247,7 +299,7 @@ test('a turn that never finishes times out cleanly', async () => {
         ipc: ipc as never,
         resolveConversation: async () => CONV,
         findSession: () => '/fake/session.jsonl',
-        createTail: () => scriptedTail([[], [started('turn-1')]]),
+        createTail: () => scriptedTail([[context()], [started('turn-1')]]),
         delay: async () => {
             clock += 1000;
         },
@@ -370,7 +422,7 @@ test('a stale cancel does not affect a run that is still bootstrapping', async (
         ipc: ipc as never,
         resolveConversation: async () => bootstrap,
         findSession: () => '/fake/session.jsonl',
-        createTail: () => scriptedTail([[], [started('real')], [complete('real', 'ok')]]),
+        createTail: () => scriptedTail([[context()], [started('real')], [complete('real', 'ok')]]),
         delay: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
         now: () => Date.now()
     });
@@ -492,7 +544,7 @@ test('the bootstrapped session is opened and drained before the real turn starts
         },
         createTail: () =>
             scriptedTail([
-                [started('bootstrap'), complete('bootstrap', 'bootstrap')],
+                [context(), started('bootstrap'), complete('bootstrap', 'bootstrap')],
                 [started('turn-1')],
                 [complete('turn-1', 'ok')]
             ]),
@@ -545,7 +597,7 @@ test('without a turn id the fallback ignores bootstrap history and selects the r
         findSession: () => '/fake/session.jsonl',
         createTail: () =>
             scriptedTail([
-                [started('bootstrap-turn'), complete('bootstrap-turn', 'BOOTSTRAP_RESULT')],
+                [context(), started('bootstrap-turn'), complete('bootstrap-turn', 'BOOTSTRAP_RESULT')],
                 [started('real-turn')],
                 [complete('real-turn', 'REAL_RESULT')]
             ]),

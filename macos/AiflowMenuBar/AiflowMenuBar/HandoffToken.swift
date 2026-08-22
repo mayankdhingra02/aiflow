@@ -9,17 +9,7 @@ enum HandoffToken {
     static let fileName = "handoff-token"
 
     static func defaultFileURL() -> URL {
-        let base =
-            FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-
-        return base.appendingPathComponent(
-            "Aiflow/\(fileName)",
-            isDirectory: false
-        )
+        AiflowStorageRoot.url(fileName)
     }
 
     @discardableResult
@@ -37,6 +27,7 @@ enum HandoffToken {
     static func load(
         at url: URL = defaultFileURL()
     ) -> String? {
+        AiflowStorageRoot.assertSafeForCurrentProcess(url)
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }

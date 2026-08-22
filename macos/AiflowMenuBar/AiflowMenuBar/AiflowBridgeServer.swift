@@ -34,6 +34,7 @@ final class AiflowBridgeServer: @unchecked Sendable {
 
     /// The single companion allowed to execute runs. Others stay passive viewers.
     private var workerKey: ObjectIdentifier?
+    private var nextWorkerReadinessOrder: UInt64 = 0
 
     private(set) var lastError: String?
 
@@ -296,9 +297,13 @@ final class AiflowBridgeServer: @unchecked Sendable {
             guard let self else { return }
             self.lock.lock()
             self.connections.removeValue(forKey: key)
-            // A departing worker releases the role so another companion can take it.
-            if self.workerKey == key { self.workerKey = nil }
+            let workerDeparted = self.workerKey == key
+            if workerDeparted {
+                self.workerKey = nil
+                self.promoteEligibleWorkerLocked()
+            }
             self.lock.unlock()
+            if workerDeparted { self.notifyControllerOfWorkerAvailability() }
             // Deliberately nothing else: losing the viewer never touches the run.
         }
 
@@ -340,18 +345,32 @@ final class AiflowBridgeServer: @unchecked Sendable {
             let key = ObjectIdentifier(connection)
             let ready = command.workerState == "ready"
             lock.lock()
-            connection.isWorker = ready
+            let wasDesignated = workerKey == key
             if ready {
-                if workerKey == nil || workerKey == key { workerKey = key }
+                if !connection.isWorker {
+                    connection.workerReadinessOrder = nextWorkerReadinessOrder
+                    nextWorkerReadinessOrder &+= 1
+                }
+                connection.isWorker = true
+                if workerKey == nil { workerKey = key }
             } else if workerKey == key {
+                connection.isWorker = false
+                connection.workerReadinessOrder = nil
                 workerKey = nil
+                promoteEligibleWorkerLocked()
+            } else {
+                connection.isWorker = false
+                connection.workerReadinessOrder = nil
             }
             let isDesignated = workerKey == key
+            let designationChanged = isDesignated || (wasDesignated && !ready)
             lock.unlock()
 
-            // Only the designated worker's availability drives the app's worker choice; a
-            // second companion announcing readiness must not change it.
-            guard isDesignated else { return }
+            // A ready non-designated companion remains eligible for deterministic promotion.
+            // The controller always receives the server's current designation, not a stale
+            // command from a socket whose ownership changed while the MainActor was busy.
+            if designationChanged { notifyControllerOfWorkerAvailability() }
+            return
         }
 
         if command.type.isWorkerReport {
@@ -364,6 +383,34 @@ final class AiflowBridgeServer: @unchecked Sendable {
 
         Task { @MainActor [weak self] in
             self?.controller?.handleBridgeCommand(command)
+        }
+    }
+
+    /// Selects one already-authenticated ready replacement. Readiness order makes takeover
+    /// deterministic while `workerKey` preserves the single-worker execution boundary.
+    /// Caller holds `lock`.
+    private func promoteEligibleWorkerLocked() {
+        guard workerKey == nil else { return }
+        let replacement = connections.min { lhs, rhs in
+            let left = lhs.value.workerReadinessOrder ?? UInt64.max
+            let right = rhs.value.workerReadinessOrder ?? UInt64.max
+            return left < right
+        }
+        guard let replacement,
+              replacement.value.isAuthenticated,
+              replacement.value.isWorker,
+              replacement.value.workerReadinessOrder != nil
+        else { return }
+        workerKey = replacement.key
+    }
+
+    private func notifyControllerOfWorkerAvailability() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.controller?.handleBridgeCommand(BridgeCommand(
+                type: .workerAvailable,
+                workerState: self.hasDesignatedWorker ? "ready" : "unavailable"
+            ))
         }
     }
 
@@ -386,6 +433,7 @@ final class AiflowBridgeServer: @unchecked Sendable {
 
         /// Set when this companion announced it can execute runs.
         var isWorker = false
+        var workerReadinessOrder: UInt64?
 
         /// Per connection: authenticating one client never authenticates another.
         var isAuthenticated: Bool {

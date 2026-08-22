@@ -472,6 +472,9 @@ final class BridgeWorkerRoutingTests: XCTestCase {
     private var suiteName: String!
     private var server: AiflowBridgeServer!
     private var viewModel: WidgetViewModel!
+    private var handoffStore: RunResultHandoffStore!
+    private var reviewStore: ChatGPTReviewStore!
+    private var dispatchStore: ChatGPTReviewDispatchStore!
     private let token = BridgeToken.generate()
     private let project = SavedProject(name: "demo", path: "/repos/demo")
 
@@ -482,6 +485,12 @@ final class BridgeWorkerRoutingTests: XCTestCase {
             .appendingPathComponent("aiflow-routing-\(unique)")
         suiteName = "aiflow.tests.routing.\(unique)"
         defaults = UserDefaults(suiteName: suiteName)
+        handoffStore = RunResultHandoffStore(
+            directoryURL: directory.appendingPathComponent("handoffs/pending"),
+            deliveredDirectoryURL: directory.appendingPathComponent("handoffs/delivered")
+        )
+        reviewStore = ChatGPTReviewStore(directoryURL: directory.appendingPathComponent("reviews"))
+        dispatchStore = ChatGPTReviewDispatchStore(directoryURL: directory.appendingPathComponent("dispatches"))
 
         viewModel = WidgetViewModel(
             store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
@@ -489,7 +498,10 @@ final class BridgeWorkerRoutingTests: XCTestCase {
             defaults: defaults,
             detectChat: { nil },
             validateGit: { .repository(root: $0) },
-            notifications: MuteNotifications()
+            notifications: MuteNotifications(),
+            handoffStore: handoffStore,
+            reviewStore: reviewStore,
+            reviewDispatchStore: dispatchStore
         )
         server = AiflowBridgeServer(port: 0, token: token)
         viewModel.attachBridge(server)
@@ -592,6 +604,224 @@ final class BridgeWorkerRoutingTests: XCTestCase {
                     effort: "low")))
         let delivered = try await second.nextEvent(ofType: .executeRun)
         XCTAssertEqual(delivered.runId, "run-2")
+    }
+
+    func testReadyReplacementIsPromotedWhenDesignatedWorkerDisconnects() async throws {
+        let first = try await connectCompanion(asWorker: true)
+        let replacement = try await connectCompanion(asWorker: true)
+        defer { first.close(); replacement.close() }
+
+        XCTAssertTrue(server.hasDesignatedWorker)
+
+        // Reconnect can overlap: the replacement authenticates and announces readiness before
+        // Network.framework reports the old designated socket closed.
+        first.close()
+        let deadline = Date().addingTimeInterval(2)
+        while server.connectionCount != 1, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(server.connectionCount, 1)
+
+        XCTAssertTrue(
+            server.hasDesignatedWorker,
+            "an already-ready replacement must not remain a viewer after the old worker closes"
+        )
+        XCTAssertTrue(server.sendToWorker(.executeRun(
+            runId: "run-after-reconnect", project: project, prompt: "p",
+            model: "terra", effort: "medium"
+        )))
+        let delivered = try await replacement.nextEvent(ofType: .executeRun)
+        XCTAssertEqual(delivered.runId, "run-after-reconnect")
+    }
+
+    func testDesignatedWorkerDisconnectWithoutReplacementClearsAvailability() async throws {
+        let worker = try await connectCompanion(asWorker: true)
+        XCTAssertTrue(viewModel.officialWorkerAvailable)
+
+        worker.close()
+        let deadline = Date().addingTimeInterval(2)
+        while (server.connectionCount != 0 || viewModel.officialWorkerAvailable), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(server.connectionCount, 0)
+        XCTAssertFalse(server.hasDesignatedWorker)
+        XCTAssertFalse(viewModel.officialWorkerAvailable)
+    }
+
+    func testPendingReviewResumesExactlyOnceOnReadyReplacement() async throws {
+        let repositoryURL = directory.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        viewModel.addProject(at: repositoryURL.path)
+        let reviewProject = try XCTUnwrap(viewModel.savedProjects.first)
+
+        let first = try await connectCompanion(asWorker: true)
+        let replacement = try await connectCompanion(asWorker: true)
+        defer { first.close(); replacement.close() }
+
+        // Hold the durable review pending until the reconnect promotion itself announces that
+        // a valid official worker is available.
+        viewModel.setOfficialWorkerAvailable(false)
+        let sourceRunId = UUID().uuidString
+        let followUpRunId = try persistPendingReview(
+            sourceRunId: sourceRunId,
+            project: reviewProject
+        )
+        viewModel.recheckReviewEvidence()
+        XCTAssertFalse(
+            viewModel.reviewAutomationBlocked,
+            viewModel.reviewAutomationBlockReason ?? "synthetic review evidence was blocked"
+        )
+        XCTAssertEqual(try dispatchStore.record(sourceRunId: sourceRunId)?.state, .pending)
+
+        first.close()
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            let dispatchState = try dispatchStore.record(sourceRunId: sourceRunId)?.state
+            if server.connectionCount == 1,
+               server.hasDesignatedWorker,
+               dispatchState == .dispatching {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(server.connectionCount, 1)
+        XCTAssertTrue(server.hasDesignatedWorker)
+        XCTAssertTrue(viewModel.officialWorkerAvailable)
+        XCTAssertFalse(viewModel.reviewAutomationBlocked)
+        let dispatched = try dispatchStore.record(sourceRunId: sourceRunId)
+        XCTAssertEqual(dispatched?.state, .dispatching)
+        guard dispatched?.state == .dispatching else { return }
+        let followUp = try await replacement.nextEvent(ofType: .executeFollowup)
+        XCTAssertEqual(followUp.runId, followUpRunId)
+        XCTAssertEqual(followUp.model, "terra")
+        XCTAssertEqual(followUp.effort, "medium")
+        XCTAssertEqual(try dispatchStore.record(sourceRunId: sourceRunId)?.state, .dispatching)
+
+        // Repeated readiness cannot replay an already-dispatching immutable record.
+        replacement.send(#"{"type":"worker_available","workerState":"ready"}"#)
+        do {
+            _ = try await replacement.nextEvent(ofType: .executeFollowup, timeout: 0.5)
+            XCTFail("the promoted replacement received a duplicate follow-up")
+        } catch {
+            // Expected: exactly one Codex turn is admitted.
+        }
+    }
+
+    func testPendingReviewSurvivesViewModelRestartAndResumesExactlyOnce() throws {
+        let repositoryURL = directory.appendingPathComponent("restart-repo")
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        viewModel.addProject(at: repositoryURL.path)
+        let reviewProject = try XCTUnwrap(viewModel.savedProjects.first)
+        viewModel.setOfficialWorkerAvailable(false)
+
+        let sourceRunId = UUID().uuidString
+        let followUpRunId = try persistPendingReview(
+            sourceRunId: sourceRunId,
+            project: reviewProject
+        )
+        viewModel.recheckReviewEvidence()
+        XCTAssertEqual(try dispatchStore.record(sourceRunId: sourceRunId)?.state, .pending)
+
+        var deliveredEvents: [BridgeEvent] = []
+        let restarted = WidgetViewModel(
+            store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
+            map: ChatProjectMap(fileURL: directory.appendingPathComponent("map.json")),
+            defaults: defaults,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: MuteNotifications(),
+            handoffStore: handoffStore,
+            reviewStore: reviewStore,
+            reviewDispatchStore: dispatchStore,
+            reviewFollowupSender: {
+                deliveredEvents.append($0)
+                return true
+            }
+        )
+
+        restarted.setOfficialWorkerAvailable(true)
+        restarted.setOfficialWorkerAvailable(true)
+
+        let resumed = try dispatchStore.record(sourceRunId: sourceRunId)
+        XCTAssertEqual(resumed?.state, .dispatching)
+        XCTAssertEqual(deliveredEvents.count, 1)
+        XCTAssertEqual(deliveredEvents.first?.runId, followUpRunId)
+        XCTAssertEqual(deliveredEvents.first?.model, "terra")
+        XCTAssertEqual(deliveredEvents.first?.effort, "medium")
+    }
+
+    func testRestartWithMissingDeliveredHandoffFailsClosedWithSpecificReason() throws {
+        let repositoryURL = directory.appendingPathComponent("missing-handoff-repo")
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        viewModel.addProject(at: repositoryURL.path)
+        let reviewProject = try XCTUnwrap(viewModel.savedProjects.first)
+        viewModel.setOfficialWorkerAvailable(false)
+
+        let sourceRunId = UUID().uuidString
+        _ = try persistPendingReview(sourceRunId: sourceRunId, project: reviewProject)
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent("handoffs/delivered/\(sourceRunId).json")
+        )
+
+        var deliveredEvents: [BridgeEvent] = []
+        let restarted = WidgetViewModel(
+            store: SavedProjectStore(fileURL: directory.appendingPathComponent("saved.json")),
+            map: ChatProjectMap(fileURL: directory.appendingPathComponent("map.json")),
+            defaults: defaults,
+            detectChat: { nil },
+            validateGit: { .repository(root: $0) },
+            notifications: MuteNotifications(),
+            handoffStore: handoffStore,
+            reviewStore: reviewStore,
+            reviewDispatchStore: dispatchStore,
+            reviewFollowupSender: {
+                deliveredEvents.append($0)
+                return true
+            }
+        )
+
+        restarted.setOfficialWorkerAvailable(true)
+
+        let failed = try dispatchStore.record(sourceRunId: sourceRunId)
+        XCTAssertEqual(failed?.state, .manualAttention)
+        XCTAssertEqual(failed?.terminalReason, "delivered source handoff evidence is missing")
+        XCTAssertTrue(deliveredEvents.isEmpty)
+    }
+
+    private func persistPendingReview(sourceRunId: String, project: SavedProject) throws -> String {
+        let capturedAt = Date(timeIntervalSince1970: 1_700_000_100)
+        let handoff = RunResultHandoff(
+            runId: sourceRunId,
+            outcome: .completed,
+            project: .init(id: project.id, name: project.name, path: project.path),
+            sourceChat: .init(url: "https://chatgpt.com/c/chat", conversationId: "chat"),
+            execution: .init(
+                worker: "official-vscode",
+                modelRole: "terra",
+                modelId: "gpt-5.6-terra",
+                effort: "medium",
+                codexConversationId: "codex-conversation",
+                codexTurnId: "codex-turn"
+            ),
+            result: .init(finalMessage: "done", errorMessage: nil),
+            startedAt: capturedAt.addingTimeInterval(-10),
+            finishedAt: capturedAt
+        )
+        try handoffStore.persist(handoff)
+        try handoffStore.markDelivered(runId: sourceRunId)
+        try reviewStore.persist(ChatGPTReview(
+            runId: sourceRunId,
+            conversationId: "chat",
+            sourceChatURL: "https://chatgpt.com/c/chat",
+            assistantMessage: "# Implementation Review\n## Verdict\nCHANGES_REQUESTED\n## Codex Instruction\nFix the acceptance issue.",
+            capturedAt: capturedAt
+        ))
+        viewModel.reconcileReviewsForTesting()
+        guard let prepared = try dispatchStore.record(sourceRunId: sourceRunId) else {
+            throw NSError(domain: "BridgeWorkerRoutingTests", code: 1)
+        }
+        return try XCTUnwrap(prepared.followUpRunId)
     }
 
     /// A report from a companion that is not the worker is not evidence about the run.

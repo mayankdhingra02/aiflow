@@ -9,6 +9,7 @@ enum HandoffClientCommandType: String, Codable, Equatable {
     case auth
     case next
     case delivered
+    case blocked
     case review
     case ping
     case nextRouting = "next_routing"
@@ -52,6 +53,10 @@ struct HandoffClientCommand: Codable, Equatable {
             token: nil,
             runId: runId, protocolVersion: nil, conversationId: nil, assistantMessage: nil
         )
+    }
+
+    static func blocked(runId: String) -> HandoffClientCommand {
+        HandoffClientCommand(type: .blocked, token: nil, runId: runId, protocolVersion: nil, conversationId: nil, assistantMessage: nil)
     }
 
     static func review(runId: String, conversationId: String, assistantMessage: String) -> HandoffClientCommand {

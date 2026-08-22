@@ -448,6 +448,9 @@ final class HandoffTransportServer: @unchecked Sendable {
                 on: connection
             )
 
+        case .blocked:
+            skipBlockedHandoff(command, on: connection)
+
         case .review:
             captureReview(command, on: connection)
         case .nextRouting:
@@ -525,7 +528,7 @@ final class HandoffTransportServer: @unchecked Sendable {
         if let runId =
             connection.inFlightRunId
         {
-            if let handoff =
+            if !connection.skippedRunIds.contains(runId), let handoff =
                 store.handoff(runId: runId)
             {
                 send(
@@ -540,7 +543,7 @@ final class HandoffTransportServer: @unchecked Sendable {
 
         guard
             let handoff =
-                store.pendingHandoffs().first
+                store.pendingHandoffs().first(where: { !connection.skippedRunIds.contains($0.runId) })
         else {
             send(
                 .empty(),
@@ -556,6 +559,21 @@ final class HandoffTransportServer: @unchecked Sendable {
             .handoff(handoff),
             to: connection
         )
+    }
+
+    /// A browser can safely decline an exact handoff only after persisting its terminal
+    /// ambiguity evidence. Keep the record pending, but do not let it starve newer work.
+    private func skipBlockedHandoff(_ command: HandoffClientCommand, on connection: Connection) {
+        guard let runId = command.runId, UUID(uuidString: runId) != nil else {
+            send(.error("invalid_run_id", runId: command.runId), to: connection)
+            return
+        }
+        guard connection.inFlightRunId == runId, store.handoff(runId: runId) != nil else {
+            send(.error("run_mismatch", runId: runId), to: connection)
+            return
+        }
+        connection.skippedRunIds.insert(runId)
+        connection.inFlightRunId = nil
     }
 
     private func acknowledgeDelivery(
@@ -726,6 +744,7 @@ final class HandoffTransportServer: @unchecked Sendable {
         private var didClose = false
 
         var inFlightRunId: String?
+        var skippedRunIds: Set<String> = []
 
         var onReady: (() -> Void)?
         var onData: ((Data) -> Void)?

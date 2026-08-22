@@ -8,15 +8,14 @@ import Foundation
 /// property of this Mac utility, not of the Python workflow.
 final class ChatProjectMap {
     private(set) var mappings: [String: String] = [:]
-    private let fileURL: URL
+    let fileURL: URL
 
     static func defaultFileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Aiflow/chat-project-map.json")
+        AiflowStorageRoot.url("chat-project-map.json")
     }
 
     init(fileURL: URL = ChatProjectMap.defaultFileURL()) {
+        AiflowStorageRoot.assertSafeForCurrentProcess(fileURL)
         self.fileURL = fileURL
         load()
     }

@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   buildRoutingMessage,
   createChannelAdmission,
-  routingMessageIsBounded
+  routingMessageIsBounded,
+  routingDeliveryMayRetry
 } from "./lib.js";
 
 test("routing envelope carries an exact routing sentinel and bounded response guard", () => {
@@ -15,6 +16,12 @@ test("routing envelope carries an exact routing sentinel and bounded response gu
   assert.equal(routingMessageIsBounded("# Codex Routing\n## Model\nsol\n## Reasoning\nhigh"), true);
   assert.equal(routingMessageIsBounded(""), false);
   assert.equal(routingMessageIsBounded("x".repeat(32 * 1024 + 1)), false);
+});
+
+test("routing retries only when the content script was definitely not reached", () => {
+  assert.equal(routingDeliveryMayRetry({ reached: false, value: null }), true);
+  assert.equal(routingDeliveryMayRetry({ reached: true, value: { ok: false } }), false);
+  assert.equal(routingDeliveryMayRetry({ reached: true, value: { ok: true } }), false);
 });
 
 test("routing is admitted while a normal handoff is busy and duplicates coalesce", () => {
